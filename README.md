@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-当前交付项目开发规范、完整设计、阶段计划和参考知识库。应用 P1–P4 尚未开始，没有可启动的网站；真实历史样本、启动脚本及应用测试尚未完成。阶段进度与实际检查见 [路线与验收](overview/04-roadmap-and-acceptance.md)。
+P0 已完成：项目开发规范、完整设计、阶段计划和参考知识库已同步到 GitHub。应用 P1–P4 尚未开始，没有可启动的网站；真实历史样本、启动脚本及应用测试尚未完成。阶段进度与实际检查见 [路线与验收](overview/04-roadmap-and-acceptance.md)。
 
 GitHub 仓库为 [Taiyixcx/FX-simulation](https://github.com/Taiyixcx/FX-simulation)。本机目录保留 `D:\FX_site`；本地目录名与远端仓库名可以不同，不影响 Git 同步或开发。
 
