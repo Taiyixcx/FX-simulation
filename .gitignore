@@ -1,0 +1,28 @@
+# Dependencies, build output and verification artifacts
+node_modules/
+dist/
+.vite/
+coverage/
+test-results/
+playwright-report/
+*.log
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+*.local
+.codex/
+.aws/
+
+# Personal exports and raw market files
+backups/
+imports/
+local-data/
+/public/data/**/*.csv
+/public/data/**/*.zip
+/public/data/**/*.bi5
+
+# OS files
+.DS_Store
+Thumbs.db
