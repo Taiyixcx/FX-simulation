@@ -12,8 +12,7 @@ playwright-report/
 .env.*
 !.env.example
 *.local
-.codex/
-.aws/
+.AGENTS.md
 
 # Personal exports and raw market files
 backups/
