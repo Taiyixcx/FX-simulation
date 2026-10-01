@@ -73,11 +73,15 @@ Remove-Item Env:\FX_E2E_PREVIEW
 
 ## 项目文档
 
+2026-10-01 在 `feature/opt` 完成 [整体页面美化方案](overview/05-interface-redesign.md) 与 [独立交互样稿](overview/05-interface-preview.html)，参考 19 个官方页面。样稿可直接用浏览器打开，包含持仓、初始、平仓和保存失败示例；已定向检查六种宽度、200% 文字、键盘帮助与减少动效。**Vue 应用尚未接入新方案**，样稿不执行交易或保存练习；当前应用状态仍以上文 P1 说明为准。
+
 | 入口 | 内容 |
 | --- | --- |
 | [产品与设计](overview/01-product-and-design.md) | 当前工作台、首版范围与后续交互 |
 | [架构](overview/02-architecture.md) | 实际技术栈、目录职责、接口与数据流 |
 | [数据与交易](overview/03-data-and-trading.md) | 默认参数、行情来源、CSV、交易与保存规则 |
 | [路线与验收](overview/04-roadmap-and-acceptance.md) | P0–P4 阶段、完成条件及实际验证 |
+| [整体页面美化方案](overview/05-interface-redesign.md) | 新一轮视觉方向、模块设计、动效、响应式与接入验收；尚未接入应用 |
+| [交互设计样稿](overview/05-interface-preview.html) | 可本机独立打开的示例界面，不执行交易或写入练习 |
 | [参考知识库](knowledge/README.md) | 外汇、网页工程和同类产品的官方资料 |
 | [开发规范](AGENTS.md) | 文件组织、命名、文档同步与验证约束 |
