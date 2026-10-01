@@ -1,64 +1,67 @@
 # 架构与目录职责
 
-本文定义后续应用实现的技术、模块和内部接口设计；实际阶段状态与验证结果见 [路线与验收](04-roadmap-and-acceptance.md)。开发约束统一见 [AGENTS.md](../AGENTS.md)，技术依据集中在 [前端与存储知识](../knowledge/02-web-engineering.md)。
+本文记录 P1 已落地的技术与内部接口，并单独说明后续扩展。实际阶段状态与验证结果见 [路线与验收](04-roadmap-and-acceptance.md)，开发约束见 [AGENTS.md](../AGENTS.md)，依据见 [前端与存储知识](../knowledge/02-web-engineering.md)。
 
 ## 技术栈
 
-| 能力 | 方案 | 用途 |
+依赖按 `package.json` 和唯一的 `package-lock.json` 锁定，不把文档的版本号当作升级指令。
+
+| 能力 | 当前依赖 | 用途 |
 | --- | --- | --- |
-| 界面 | Vue 3、TypeScript | 单页工作台，Composition API 与单文件组件 |
-| 构建与服务 | Vite、npm | 本机开发、打包与固定地址运行 |
-| 状态协调 | Pinia | 一个会话 Store 协调行情、账户、记录和操作状态 |
-| 图表 | Lightweight Charts | 折线、K 线、十字线、缩放和成交标记 |
-| 计算 | Decimal.js | 报价、数量、资金与盈亏的十进制运算 |
-| 保存 | IndexedDB | 数据集、会话、成交及备注的事务保存 |
-| 单元验证 | Vitest | 行情源、交易计算、解析与快照行为 |
-| 流程验证 | Playwright | 本地工作台关键操作和恢复流程 |
+| 界面 | Vue 3.5.43、TypeScript 6.0.3、vue-tsc 3.3.11 | Composition API、单文件组件与严格类型检查 |
+| 构建与服务 | Vite 8.3.1、Vue 插件 6.0.9、npm | 本机开发、静态打包与固定地址预览 |
+| 状态协调 | Pinia 4.0.3 | 单个会话 Store 统一协调进度、账户和保存 |
+| 图表 | Lightweight Charts 5.2.1 | Bid 折线、K 线、十字线、缩放和成交标记 |
+| 计算 | Decimal.js 10.6.0 | 报价、数量、资金与盈亏的十进制运算 |
+| 保存 | 浏览器原生 IndexedDB | 会话快照与当前会话索引的事务保存 |
+| 单元验证 | Vitest 5.0.3、fake-indexeddb 6.2.5 | 引擎、图表适配、快照、事务和 Store |
+| 流程验证 | Playwright 1.63.0 | Chromium 内的工作台操作和刷新恢复 |
 
-使用原生语义控件、CSS 变量和组件 scoped 样式。首版不引入完整组件库、Router、SSR、后端或 PWA；仅在实际实现需要时添加辅助依赖。
+使用原生语义控件、CSS 变量和组件 scoped 样式。未引入组件库、Router、SSR、后端或 PWA。TypeScript 使用与当前 vue-tsc 实际验证可用的 6.0.3；是否升级需按项目兼容性判断，不默认切换其他编译器版本。
 
-## 目录设计
-
-以下是应用完成后的组织目标，按阶段创建实际需要的文件；不提前建立空的源码、共享层或测试目录。
+## 当前目录
 
 ```text
 FX-simulation/
 ├─ AGENTS.md
 ├─ README.md
-├─ .gitignore
-├─ .gitattributes
 ├─ overview/                    # 产品、架构、规则、阶段与验收
-├─ knowledge/                   # 主题笔记及可核查的外部资料
+├─ knowledge/                   # 主题笔记及官方资料
 ├─ public/
-│  ├─ data/                     # 本机历史样本及来源信息
-│  ├─ templates/                # 统一 CSV 模板
 │  └─ favicon.svg
 ├─ src/
-│  ├─ App.vue                   # 工作台布局与功能装配
+│  ├─ App.vue                   # 工作台布局、保存状态和功能装配
 │  ├─ main.ts                   # Vue 与 Pinia 初始化
+│  ├─ priceFormatting.ts        # 多功能共用的数字及时间展示
 │  ├─ features/
-│  │  ├─ chart/                 # 图表、报价与成交标记
-│  │  ├─ replay/                # 数据选择、回放与导入界面
-│  │  ├─ trading/               # 下单表单与持仓操作
-│  │  ├─ journal/               # 会话、成交与备注
-│  │  └─ help/                  # 三步引导与术语
+│  │  ├─ chart/
+│  │  │  ├─ MarketChart.vue     # 图表生命周期、序列与成交标注
+│  │  │  └─ chartData.ts        # 价格绘图值、秒时间和标记适配
+│  │  ├─ replay/
+│  │  │  └─ ReplayControls.vue  # 暂停、单步、调速和图表类型
+│  │  ├─ trading/
+│  │  │  ├─ AccountSummary.vue # 账户指标
+│  │  │  └─ TradePanel.vue      # 金额输入、开仓和平仓
+│  │  └─ journal/
+│  │     └─ TradeJournal.vue    # 当前练习已平仓记录
 │  ├─ engine/
-│  │  ├─ simulationSource.ts    # 可复现的生成行情
-│  │  ├─ historicalSource.ts    # 历史帧的前向读取
-│  │  ├─ marketData.ts          # 行情格式解析与业务校验
-│  │  ├─ execution.ts           # 开仓、平仓与成交结果
-│  │  ├─ account.ts             # 权益、可用资金与结算
-│  │  └─ types.ts               # 引擎边界业务类型
+│  │  ├─ simulationSource.ts    # 确定性逐根模拟行情
+│  │  ├─ execution.ts           # 开仓、平仓与权益耗尽结算
+│  │  ├─ account.ts             # 账户估值与交易输入校验
+│  │  ├─ decimal.ts             # 复用的十进制政策与解析
+│  │  ├─ errors.ts              # 引擎错误类型
+│  │  └─ types.ts               # 业务边界类型
 │  ├─ stores/
-│  │  └─ useSessionStore.ts     # 当前会话协调
-│  ├─ storage/                 # IndexedDB、序列化、备份与恢复
-│  └─ styles/                  # 全局变量与基础样式
-├─ scripts/                     # 本机数据整理与校验
+│  │  └─ useSessionStore.ts     # 当前练习、调度器与保存协调
+│  ├─ storage/
+│  │  ├─ sessionSnapshot.ts     # 纯快照校验与账本重建
+│  │  └─ sessionRepository.ts   # IndexedDB 事务及版本冲突检查
+│  └─ styles/
+│     └─ base.css              # 视觉变量、基础排版与焦点
 ├─ tests/
-│  ├─ unit/
-│  └─ e2e/
+│  ├─ unit/                    # 纯逻辑、存储与会话测试
+│  └─ e2e/                     # 浏览器关键流程
 ├─ index.html
-├─ start.cmd
 ├─ package.json
 ├─ package-lock.json
 ├─ tsconfig.json
@@ -67,69 +70,79 @@ FX-simulation/
 └─ playwright.config.ts
 ```
 
-`src/components/` 仅在出现跨功能共享界面组件后建立；`src/composables/` 仅在出现可复用的 Vue 组合逻辑后建立。功能独用的组件、逻辑和类型留在 feature 内。行情源直接放在 `engine/`，不为两个小模块增加 `sources/` 层；布局由 `App.vue` 承担，不另建 `src/app/`。
+后续 P2 按需要增加历史源、CSV 校验、本机转换脚本、`public/data/` 与模板；P3 增加会话列表、备注、帮助及完整备份恢复；P4 增加 `start.cmd`。当前没有这些实现。`src/components/`、`src/composables/` 只在出现实际共享需求后建立，功能独用逻辑留在 feature 内。
 
-用户导入的数据进入 IndexedDB。`public/data/` 可放本机准备的真实样本；公开仓库只提交来源信息和已确认允许再分发的文件。原始下载、个人备份及未获公开授权的行情文件不进入版本控制；具体来源规则见 [数据与交易](03-data-and-trading.md)。
+`priceFormatting.ts` 为账户、报价、持仓和记录共用，无需为一个展示文件预建多层目录。行情源直接放在 `engine/`。用户导入数据未来进入 IndexedDB；公开源码不能自动包含授权未核实的真实行情，来源规则见 [数据与交易](03-data-and-trading.md)。
 
 ## 职责与依赖
 
 | 区域 | 负责内容 | 依赖边界 |
 | --- | --- | --- |
-| `App.vue`、`main.ts` | 初始化、布局与功能装配 | 不承载资金公式或数据转换 |
-| `features/` | 展示、输入、反馈与功能局部状态 | 通过会话 Store 发起业务操作 |
-| `engine/` | 行情、成交、账户和纯数据校验 | 不依赖 Vue、Pinia、DOM、定时器或浏览器存储 |
-| `useSessionStore.ts` | 统一推进、交易命令、会话切换和保存协调 | 调用引擎与 storage，拥有回放调度资源 |
-| `storage/` | 数据读写、版本校验、DTO 转换、备份与恢复 | 不驱动图表、不决定成交价格 |
-| `styles/` | 共享视觉变量、基础排版和全局元素样式 | 组件局部样式留在 `.vue` 文件 |
-| `scripts/` | 开发阶段来源转换与样本校验 | 不成为应用运行时联网依赖 |
-| `tests/` | 纯业务和浏览器关键流程验证 | 不存放业务源码或生成产物 |
-
-单个会话 Store 避免报价、账户和图表各自推进。金额、数量和盈亏公式只在引擎维护；图表读取可见帧，不能自行访问历史全量数据。纯格式校验放在 `engine/marketData.ts`；浏览器文件读取、事务及恢复提交由 `storage/` 负责。
+| `App.vue`、`main.ts` | 初始化、布局、功能装配及文件下载入口 | 不承担账户与成交公式 |
+| `features/` | 展示、输入、图表适配和操作反馈 | 通过会话 Store 发起业务操作 |
+| `engine/` | 行情、成交、账户和纯数值校验 | 不依赖 Vue、Pinia、DOM、计时器或浏览器存储 |
+| `useSessionStore.ts` | 逐根推进、交易、切换、保存状态与重试 | 调用引擎和 storage，拥有并清理回放计时器 |
+| `sessionSnapshot.ts` | 校验不可信快照，重放模拟行情并重建账本 | 复用引擎验证价格和结算，不另写公式 |
+| `sessionRepository.ts` | 数据库连接、事务、当前索引和并发版本检查 | 事务完成才确认保存；不驱动图表或选择成交价 |
+| `styles/`、`priceFormatting.ts` | 共享基础样式和数值展示 | 展示舍入不回写账本 |
+| `tests/` | 业务、事务与浏览器流程验证 | 不存放业务源码或生成产物 |
 
 ```text
 Vue 操作 ───────► useSessionStore
-                        │ 推进 / 开仓 / 平仓
+                        │ 逐根推进 / 开仓 / 平仓
                         ▼
-             行情源 + 交易与账户引擎
+             模拟行情源 + 交易与账户引擎
                         │ 同一可见帧与账户结果
                         ▼
-                 一致的会话状态 ───► Vue 图表、下单、记录
-                        │ 快照
+                 一致的会话状态 ───► 图表、下单、成交记录
+                        │ 候选快照
                         ▼
-            storage 校验、序列化、事务 ───► IndexedDB
+               校验行情及账本 ───► IndexedDB 事务
+                                        │ 完成 / 失败
+                                        ▼
+                              保存状态 / 暂停及重试
 ```
 
-导入先在独立流程读取、解析和校验，通过后才写入数据集。备份恢复也先校验完整快照，再事务提交，最后替换当前会话。保存失败时暂停行情与交易，不发布“已保存”状态；旧数据保留，允许重试和导出内存快照。
+加速推进仍逐根更新并检查权益耗尽，之后保存同一时刻的行情与账户。保存失败保留候选内存快照和原数据库记录，并暂停推进与交易；重试保存同一候选快照，不重新执行成交。
 
-## 最小内部接口
+## 已落地内部接口
 
-这些是实现约定，尚未形成代码 API；不提供网络接口。
+所有金额、报价和数量跨模块传递十进制字符串；UTC 时间使用毫秒。源码没有网络接口。
 
-| 类型 | 必须表达的内容 |
+| 类型或函数 | 当前内容 |
 | --- | --- |
-| `MarketQuote` | UTC `timestampMs`、`bidPrice`、`askPrice`，以及 Ask 由源文件提供或训练点差生成的标识；数据真实性另由来源信息说明 |
-| `MarketFrame` | 一根已完成的 Bid 分钟 OHLC 及其当前报价；只有已推进帧可以交给界面和成交逻辑 |
-| `MarketSource` | 初始化、向前一步、源快照、恢复；两种源输出同一种帧，末尾明确返回结束状态 |
-| `DatasetMetadata` | 标识、品种、来源、实际时间范围、原始时区、报价类型、授权核对与数据校验状态 |
-| `AccountState` | 已结算余额与当前持仓；权益、可用资金和浮动盈亏由引擎派生 |
-| `SessionSnapshot` | 格式版本、会话标识、模式、品种、数据集或模拟配置、源状态、账户、成交与备注 |
+| `MarketQuote` | `timestampMs`、`bidPrice`、`askPrice`、`askSource`；模拟输出来源固定为 `training` |
+| `MarketFrame` | 一根完成的 Bid 分钟 OHLC 与当前 `quote` |
+| `SimulationState` | 版本、品种、种子、随机状态、首根完成时间、总根数、当前进度与 Bid |
+| `createSimulation(pair, seed, options)` | 返回首根 `SimulationStep`，`frameIndex = 0`；配置可指定起始时间与总根数 |
+| `advanceSimulation(state)` | 返回下一根及新状态；到末尾返回 `null`，不修改旧状态 |
+| `AccountState`、`Position` | 已结算余额、单笔持仓；持仓包含方向、名义金额、数量、成交价和开仓时间 |
+| `calculateAccount(account, quote)` | 从当前可平仓报价派生账户指标 |
+| `openPosition(...)` | 校验输入和可用资金，返回候选账户 |
+| `closePosition(...)` | 返回已结算账户和单笔 `TradeRecord` |
+| `settleDepletedAccount(...)` | 逐根检查权益耗尽，需要结清时返回同一成交结果，否则为 `null` |
+| `SessionSnapshot` | `schemaVersion`、`id`、`revision`、品种、模拟状态、仅可见帧、账户及成交 |
+| `validateSessionSnapshot(input)` | 校验版本、数据关联、确定性帧序列及完整交易账本 |
+| `SessionRepository` | `loadCurrent()`、`save(snapshot)`、`close()`；当前快照与索引在同一事务提交 |
 
-模拟源保存种子、确定的生成配置及随机状态和当前进度；恢复后必须产生相同后续序列。历史源保存数据集标识与可见进度，不把未推进帧复制到图表状态。回放调度调用源的单步接口，资金运算不依赖播放速度。
+`MarketSource` 通用接口、历史源、数据集元信息和 CSV API 仍为 P2 设计项。当前模拟源的纯函数与统一帧类型满足 P1，无需提前包装尚无实际复用的来源层。
 
-一个快照包含对应同一进度的行情状态、账户、持仓和成交记录。恢复后重算派生账户指标，保持暂停；模式、品种和数据集切换不把旧持仓套用到新报价。详细会话行为见 [数据与交易](03-data-and-trading.md)。
+快照保存可见帧和模拟随机状态，校验时根据版本、配置和种子重建同一前缀；再按记录引用的可见报价重建账户。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针同时保存会话标识和 `revision`；事务内比较读取时的基准，拒绝其他窗口已经更新后的陈旧写入。
 
 ## 数值、时间与图表适配
 
-外部价格及金额从十进制字符串进入 Decimal.js。持久化 DTO 和 JSON 备份采用十进制字符串，恢复时校验再重建 Decimal 对象；权益等派生数值由引擎重新计算。只有图表适配层将价格转换为绘图所需的普通数值，绘图数值不返回资金计算。
+`decimal.ts` 使用独立 Decimal 构造器隔离精度与舍入设置。持久化快照和 JSON 导出使用普通对象及字符串，不保存 Decimal 实例。完整交易政策只在 [数据与交易](03-data-and-trading.md) 维护。
 
-内部统一使用 UTC 毫秒 `timestampMs`；图表适配集中转换为秒 `timeSec`。展示时使用 Asia/Shanghai 并注明 UTC+8；来源时区转换在导入或样本整理阶段完成，不写入本机时区的账本时间。CSV 接口、分钟完成时间和来源转换规则由 [数据与交易](03-data-and-trading.md) 唯一维护。
+`chartData.ts` 集中将 `timestampMs` 转为 `timeSec`，并将价格转成绘图所需的普通数值；绘图值不返回资金计算。展示采用 Asia/Shanghai 并注明 UTC+8。
 
-图表组件挂载时创建实例，以普通变量或 `shallowRef` 保存。卸载时释放图表、事件监听与尺寸观察器；会话 Store 清理自己持有的回放调度器。逐步推进使用 `series.update()`，更换会话或数据集才替换可见序列；不反复创建图表。交易标记与水平线使用实际 Bid/Ask 成交价格，保留库要求的署名和链接。
+图表实例保存为普通变量，挂载创建，卸载释放图表、标记、十字线监听和尺寸观察器。逐根推进用 `series.update()`，切换会话、图表类型或可见前缀时才 `setData()`；仅切换类型时保留观察范围。开仓水平线和标记使用实际训练成交价，并保留 Lightweight Charts 署名与 TradingView 链接。
 
 ## 运行与验证配置
 
-后续工程提供 `dev`、`typecheck`、`test`、`test:e2e`、`build`、`start` 脚本；使用 npm 和唯一的 `package-lock.json`。类型检查使用 Vue 对应的 TypeScript 检查工具，单元测试与关键流程分别由 Vitest、Playwright 执行。脚本落地与验证结果按 [路线与验收](04-roadmap-and-acceptance.md) 记录。
+已提供 `dev`、`typecheck`、`test`、`test:e2e`、`build`、`start`。开发服务与构建预览均绑定 `127.0.0.1:4173` 并启用严格端口，不能同时运行。`start` 是 Vite 本机构建预览，双击入口留在 P4。
 
-Vite 开发服务与本机成品服务均绑定 `127.0.0.1:4173`，开启严格端口；占用时明确失败，不自动换端口。两种服务不能同时启动。`start.cmd` 在应用交付阶段负责启动服务并打开相同地址，浏览器数据始终对应同一 origin。
+Vitest 执行 `tests/unit/`；Playwright 执行 `tests/e2e/`，自动启动固定地址的开发服务并默认从 `.vite/playwright` 查找 Chromium。开发下载缓存放在 `.vite/npm-cache`，不成为运行资源。实际安装与检查命令见 [README](../README.md)，检查结果见 [路线与验收](04-roadmap-and-acceptance.md)。
 
-运行时行情、字体、图表和其他资源均本地可用，首次安装依赖和准备真实样本属于开发准备。实际启动命令、前置条件及访问说明只维护在 [根 README](../README.md)。
+当前验证通过本机 npm 脚本执行。GitHub Actions 尚未配置；本机通过不等同于远端 CI 已通过。
+
+行情生成器、图表库、字体和界面资源均本地可用；首次依赖与测试浏览器下载需要网络。断网、本机启动脚本和完整首版交付验证仍按 P4 推进。
