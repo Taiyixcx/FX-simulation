@@ -11,7 +11,8 @@
 | 界面 | Vue 3.5.43、TypeScript 6.0.3、vue-tsc 3.3.11 | Composition API、单文件组件与严格类型检查 |
 | 构建与服务 | Vite 8.3.1、Vue 插件 6.0.9、npm | 本机开发、静态打包与固定地址预览 |
 | 状态协调 | Pinia 4.0.3 | 单个会话 Store 统一协调进度、账户和保存 |
-| 图表 | Lightweight Charts 5.2.1 | Bid 折线、K 线、十字线、缩放和成交标记 |
+| 图表 | Apache ECharts 6.1.0 | 按需引入折线、K 线、十字线、缩放、平移和实际成交标记 |
+| 字体 | @fontsource/inter 5.3.0 | 本地打包英文及数字的 Inter 400/500/600/700 字重；中文使用系统字体 |
 | 计算 | Decimal.js 10.6.0 | 报价、数量、资金与盈亏的十进制运算 |
 | 保存 | 浏览器原生 IndexedDB | 会话快照与当前会话索引的事务保存 |
 | 单元验证 | Vitest 5.0.3、fake-indexeddb 6.2.5 | 引擎、图表适配、快照、事务和 Store |
@@ -28,17 +29,21 @@ FX-simulation/
 ├─ overview/                    # 产品、架构、规则、阶段与验收
 ├─ knowledge/                   # 主题笔记及官方资料
 ├─ public/
-│  └─ favicon.svg
+│  ├─ favicon.svg              # 与工作台配色一致的本地站点图标
+│  └─ licenses/                # 随构建复制的运行依赖许可及 NOTICE
 ├─ src/
 │  ├─ App.vue                   # 工作台布局、保存状态和功能装配
 │  ├─ main.ts                   # Vue 与 Pinia 初始化
 │  ├─ priceFormatting.ts        # 多功能共用的数字及时间展示
+│  ├─ components/
+│  │  ├─ Icon.vue              # 跨功能共用的本地 SVG 图标
+│  │  └─ InfoTip.vue           # 点击、键盘和焦点管理的信息提示
 │  ├─ features/
 │  │  ├─ chart/
 │  │  │  ├─ MarketChart.vue     # 图表生命周期、序列与成交标注
-│  │  │  └─ chartData.ts        # 价格绘图值、秒时间和标记适配
+│  │  │  └─ chartData.ts        # UTC 毫秒类别、OHLC、标记与可见范围适配
 │  │  ├─ replay/
-│  │  │  └─ ReplayControls.vue  # 暂停、单步、调速和图表类型
+│  │  │  └─ ReplayControls.vue  # 暂停、单步、调速及不可拖动的进度
 │  │  ├─ trading/
 │  │  │  ├─ AccountSummary.vue # 账户指标
 │  │  │  └─ TradePanel.vue      # 金额输入、开仓和平仓
@@ -70,7 +75,7 @@ FX-simulation/
 └─ playwright.config.ts
 ```
 
-后续 P2 按需要增加历史源、CSV 校验、本机转换脚本、`public/data/` 与模板；P3 增加会话列表、备注、帮助及完整备份恢复；P4 增加 `start.cmd`。当前没有这些实现。`src/components/`、`src/composables/` 只在出现实际共享需求后建立，功能独用逻辑留在 feature 内。
+后续 P2 按需要增加历史源、CSV 校验、本机转换脚本、`public/data/` 与模板；P3 增加会话列表、备注、三步引导及完整备份恢复；P4 增加 `start.cmd`。当前没有这些实现。`src/components/` 的图标和信息提示已有跨功能复用；`src/composables/` 仍未预建，功能独用逻辑留在 feature 内。
 
 `priceFormatting.ts` 为账户、报价、持仓和记录共用，无需为一个展示文件预建多层目录。行情源直接放在 `engine/`。用户导入数据未来进入 IndexedDB；公开源码不能自动包含授权未核实的真实行情，来源规则见 [数据与交易](03-data-and-trading.md)。
 
@@ -80,6 +85,7 @@ FX-simulation/
 | --- | --- | --- |
 | `App.vue`、`main.ts` | 初始化、布局、功能装配及文件下载入口 | 不承担账户与成交公式 |
 | `features/` | 展示、输入、图表适配和操作反馈 | 通过会话 Store 发起业务操作 |
+| `components/` | 跨功能的图标、信息提示及焦点处理 | 不持有账户或会话状态 |
 | `engine/` | 行情、成交、账户和纯数值校验 | 不依赖 Vue、Pinia、DOM、计时器或浏览器存储 |
 | `useSessionStore.ts` | 逐根推进、交易、切换、保存状态与重试 | 调用引擎和 storage，拥有并清理回放计时器 |
 | `sessionSnapshot.ts` | 校验不可信快照，重放模拟行情并重建账本 | 复用引擎验证价格和结算，不另写公式 |
@@ -133,15 +139,19 @@ Vue 操作 ───────► useSessionStore
 
 `decimal.ts` 使用独立 Decimal 构造器隔离精度与舍入设置。持久化快照和 JSON 导出使用普通对象及字符串，不保存 Decimal 实例。完整交易政策只在 [数据与交易](03-data-and-trading.md) 维护。
 
-`chartData.ts` 集中将 `timestampMs` 转为 `timeSec`，并将价格转成绘图所需的普通数值；绘图值不返回资金计算。展示采用 Asia/Shanghai 并注明 UTC+8。
+`MarketChart` 保持 `frames / position / trades / sessionId / chartType` 五项输入，父组件只传已推进前缀。`chartData.ts` 集中将 `timestampMs` 转为类别轴的十进制字符串键，将价格转成绘图所需的普通数值；不再转换为 Lightweight Charts 的秒时间。K 线顺序固定为 `[open, close, low, high]`，绘图值不返回资金计算。图表顶部统一展示当前或十字线所选帧的完整时间，采用 Asia/Shanghai，并注明 UTC+8。
 
-图表实例保存为普通变量，挂载创建，卸载释放图表、标记、十字线监听和尺寸观察器。逐根推进用 `series.update()`，切换会话、图表类型或可见前缀时才 `setData()`；仅切换类型时保留观察范围。开仓水平线和标记使用实际训练成交价，并保留 Lightweight Charts 署名与 TradingView 链接。
+图表实例保存为普通变量，挂载创建，卸载调用 `dispose()` 并移除监听及尺寸观察器。使用 ECharts 的模块化入口和 Canvas 渲染器，仅注册实际使用的折线、K 线、网格、提示、dataZoom、markPoint 和 markLine。行情推进通过同一实例的局部 `setOption` 更新数据；切换图表类型替换 series，不重新创建实例。ECharts 的 `appendData` 不用于折线与 K 线，不将 `setOption` 称作仅追加一个点的 API。
+
+观察范围以绝对索引保持，避免新增帧改变百分比后使窗口漂移。原本跟随最新时保持跟随；用户观察旧区域时保留范围，回到最新入口明确恢复跟随。单根行情以类别轴居中显示，不生成未来占位点。纵轴范围包括视窗内 Bid/OHLC、实际 Ask/Bid 成交标记和当前入场线；视窗外旧成交不固定当前纵轴。成交标记以 UTC 毫秒字符串作为类别坐标，避免数值被误解为类别索引。
+
+英文及数字的 Inter 字体、本地 SVG 图标和运行资源均随构建提供。`public/licenses/` 保存 ECharts 的 LICENSE/NOTICE、zrender、Inter 及实际打包运行依赖的许可证，Vite 同步复制到 `dist/licenses/`；产品界面不放第三方品牌、版权段落或技术页脚。旧库署名要求及替换理由记录在 [网页工程](../knowledge/02-web-engineering.md#图表与十进制计算)。
 
 ## 运行与验证配置
 
 已提供 `dev`、`typecheck`、`test`、`test:e2e`、`build`、`start`。开发服务与构建预览均绑定 `127.0.0.1:4173` 并启用严格端口，不能同时运行。`start` 是 Vite 本机构建预览，双击入口留在 P4。
 
-Vitest 执行 `tests/unit/`；Playwright 执行 `tests/e2e/`，自动启动固定地址的开发服务并默认从 `.vite/playwright` 查找 Chromium。开发下载缓存放在 `.vite/npm-cache`，不成为运行资源。实际安装与检查命令见 [README](../README.md)，检查结果见 [路线与验收](04-roadmap-and-acceptance.md)。
+Vitest 执行 `tests/unit/`；Playwright 执行 `tests/e2e/`，默认自动启动固定地址的开发服务并从 `.vite/playwright` 查找 Chromium。设置 `FX_E2E_PREVIEW=1` 时改为自动执行 `npm run start`，用于已构建版本的浏览器回归与完整回放，运行前必须生成 `dist/`。两种模式均拒绝复用现有服务，避免测试错版本或端口冲突。开发下载缓存放在 `.vite/npm-cache`，不成为运行资源。实际安装与检查命令见 [README](../README.md)，检查结果见 [路线与验收](04-roadmap-and-acceptance.md)。
 
 当前验证通过本机 npm 脚本执行。GitHub Actions 尚未配置；本机通过不等同于远端 CI 已通过。
 

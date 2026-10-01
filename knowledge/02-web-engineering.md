@@ -1,6 +1,6 @@
 # 网页工程
 
-初始核对日期：**2026-09-30**；P1 图表与构建测试条目更新于 **2026-10-01**，具体日期见对应条目。以下使用维护者和平台官方文档；源码与锁文件检查、官方能力描述、实际执行结果分别记录，不把文档描述当作项目验证。模块职责见 [架构](../overview/02-architecture.md)，操作与同步规则见 [AGENTS](../AGENTS.md)。
+初始核对日期：**2026-09-30**；P1 图表替换、字体与构建测试条目更新于 **2026-10-01**，具体日期见对应条目。以下使用维护者和平台官方文档；源码与锁文件检查、官方能力描述、实际执行结果分别记录，不把文档描述当作项目验证。模块职责见 [架构](../overview/02-architecture.md)，操作与同步规则见 [AGENTS](../AGENTS.md)。
 
 ## 运行与状态组织
 
@@ -41,28 +41,32 @@
 
 ## 图表与十进制计算
 
-### E06：Lightweight Charts 的能力与署名
+### E06：图表选型、模块化与许可分发
 
-[Getting started](https://tradingview.github.io/lightweight-charts/docs) · **TradingView｜Lightweight Charts 5.2 文档**。对应：[图表选型](../overview/02-architecture.md)。
+[Import ECharts](https://echarts.apache.org/handbook/en/basics/import/)、[ECharts 6.1.0 LICENSE](https://github.com/apache/echarts/blob/6.1.0/LICENSE)、[NOTICE](https://github.com/apache/echarts/blob/6.1.0/NOTICE) · **Apache ECharts｜官方手册与发布许可文件**。对应：[图表选型与分发](../overview/02-architecture.md)。
 
-- 核对日期：2026-10-01。P1 实际安装并锁定 Lightweight Charts **5.2.1**，官方资料按 5.2 API 范围核对。
-- 已核查：这是面向浏览器的图表库，提供 TypeScript 类型、线图和 K 线等序列；官方说明要求保留 NOTICE 署名及 TradingView 链接。
-- 项目对应：使用 v5 的序列与标记 API；源码保留署名和 TradingView 链接，绘图价格与账本计算分开。执行结果见 [阶段记录](../overview/04-roadmap-and-acceptance.md)。
-- 适用限制：图表库不提供外汇历史报价或交易账户。锁定版本与静态源码检查不能代替浏览器图表运行验证。
+- 核对日期：2026-10-01。当前锁文件改为 Apache ECharts **6.1.0**；官方支持按需导入图表、组件及渲染器，并以 `ComposeOption` 组合类型。
+- 已核查：Apache 2.0 的再分发条件包含提供许可副本、保留适用声明及可读 NOTICE；NOTICE 可以作为随产物分发的文本文件提供。这些文件未发现要求在工作台展示图表品牌或可点击链接的额外条款。运行依赖及字体的其他许可证需分别保留。
+- 项目对应：模块化 Canvas 图表，本地随构建提供；`public/licenses/` 保存许可文件并复制到 `dist/licenses/`，不在交易页面放第三方标识。绘图价格与 Decimal 账本计算分开。
+- 替换原因：原 P1 使用 Lightweight Charts 5.2.1；其 [官方入门文档](https://tradingview.github.io/lightweight-charts/docs) 额外要求署名及 TradingView 链接。用户要求页面无第三方标识，因此替换依赖，而非隐藏旧库署名。
+- 适用限制：这是已核对版本文件的工程分发判断；依赖版本或打包内容变动时应重新核对，不能推断所有图表库均有相同条件。图表库不提供外汇历史报价或交易账户；静态检查不代替实际运行验证。
 
-### E07：Vue 图表实例的生命周期
+### E07：图表实例、尺寸与释放
 
-[Vue.js — Wrapper Component](https://tradingview.github.io/lightweight-charts/tutorials/vuejs/wrapper) · **TradingView｜官方集成教程**。对应：[图表边界](../overview/02-architecture.md)。
+[Chart Container and Size](https://echarts.apache.org/handbook/en/concepts/chart-size/)、[Vue Performance](https://vuejs.org/guide/best-practices/performance.html) · **Apache ECharts / Vue｜官方手册**。核对日期：**2026-10-01**。对应：[图表边界](../overview/02-architecture.md)。
 
-- 已核查：官方建议用普通变量保存图表 API 实例；需要响应式引用时考虑 `shallowRef`。在挂载后创建，在卸载时调用 `remove()`。
-- 适用限制：教程示例需要按项目 TypeScript、库版本和容器尺寸处理适配；示例清理图表并不自动清理项目额外创建的监听器、观察器或计时器。
+- 已核查：初始化前容器需有尺寸；容器变化调用 `resize()`，仅监听窗口 resize 不能覆盖全部布局变化，可使用 ResizeObserver。卸载图表容器时调用 `dispose()` 释放资源。
+- 项目对应：用普通变量保存图表实例，挂载创建、卸载释放；额外监听器及观察器同时清理。报价与账户仍由语义化文本展示，不只存在于画布中。
+- 适用限制：保持单实例和正确清理属于生命周期保障，不能单独证明性能足够。不同设备、文字放大和最长行情仍需浏览器测量。
 
-### E08：整批设置与增量更新
+### E08：局部更新、K 线数据与观察范围
 
-[ISeriesApi](https://tradingview.github.io/lightweight-charts/docs/api/interfaces/ISeriesApi) · **TradingView｜Lightweight Charts API**。对应：[回放展示](../overview/02-architecture.md)。
+[Dynamic Data](https://echarts.apache.org/handbook/en/how-to/data/dynamic-data/)、[Instance API](https://github.com/apache/echarts-doc/blob/master/en/api/echarts-instance.md)、[Candlestick](https://github.com/apache/echarts-doc/blob/master/en/option/series/candlestick.md)、[Marker Coordinates](https://github.com/apache/echarts-doc/blob/master/en/option/partial/marker.md) · **Apache ECharts｜官方手册及文档源码**。核对日期：**2026-10-01**。对应：[行情绘图适配](../overview/02-architecture.md)。
 
-- 已核查：`setData()` 替换序列数据，`update()` 可更新最后一个点或追加新点；需遵守时间顺序及对应数据类型。
-- 适用限制：增量更新不能解决业务上的未来泄露。应先限制传给组件的历史范围，再调用图表 API。
+- 已核查：`setOption` 合并局部选项并更新图表，`replaceMerge` 可用于替换指定组件；`appendData` 的支持范围不包含普通折线与 K 线。K 线二维数据顺序为开、收、低、高。
+- 项目对应：使用同一实例局部 `setOption`，切换类型时替换 series；观察范围保存绝对索引，只有原本跟随最新才继续跟随。类别轴及成交点坐标使用 UTC 毫秒字符串，避免数值坐标被解释为类别索引。纵轴同时纳入视窗内实际 Ask/Bid 成交价和入场线。
+- 静态源码核查：[6.1.0 MarkLineModel](https://github.com/apache/echarts/blob/6.1.0/src/component/marker/MarkLineModel.ts) 的 `precision` 默认为 2。本项目入场线显式设置为 5，避免外汇价格被两位舍入到可见范围之外；真实成交值仍来自引擎。
+- 适用限制：ECharts 的动态更新与数据差异处理不等于每次只向内部追加一个点，也不能防止未来泄露；组件输入先限制为已推进前缀。1,440 根最高速度的实际响应和缩放保持结果只记录在 [阶段记录](../overview/04-roadmap-and-acceptance.md)。
 
 ### E09：Decimal 的精度、舍入和序列化
 
@@ -140,4 +144,13 @@
 
 - 已核查：Playwright Test 可执行 Chromium、Firefox 与 WebKit 流程；浏览器二进制需要单独安装，安装与执行可用 `PLAYWRIGHT_BROWSERS_PATH` 指向同一目录。
 - 项目对应：锁定 Playwright 1.63.0，P1 检查项目仅启用 Chromium；配置默认查找 `.vite/playwright`，避免在受限开发环境中写入项目之外的默认浏览器缓存。实际执行结果单独记录在 [阶段记录](../overview/04-roadmap-and-acceptance.md)。
+- 项目取舍：默认启动开发服务进行流程检查；完整最高速度回放用 `FX_E2E_PREVIEW=1` 启动生产构建，避免源码热更新重载影响实例保持证据。这是项目测试配置，不属于 Playwright 的通用环境变量。
 - 适用限制：安装测试浏览器需下载资源，但应用运行不依赖这些文件或 Playwright。一个 Chromium 项目不能证明所有浏览器兼容、完整无障碍符合性或全部首版场景已经验收。
+
+### E19：本地字体与原创图标
+
+[Installing Fonts](https://fontsource.org/docs/getting-started/install)、[Inter License](https://github.com/rsms/inter/blob/master/LICENSE.txt) · **Fontsource / Inter｜维护者文档与字体许可**。核对日期：**2026-10-01**。对应：[字体与运行资源](../overview/01-product-and-design.md)。
+
+- 已核查：Fontsource 的 npm 包可按字重、样式和子集导入字体 CSS；Inter 按 SIL Open Font License 1.1 分发。实际安装锁定 `@fontsource/inter` **5.3.0**，包内字体许可随产物保留。
+- 项目对应：仅打包 Latin 常用字重 400/500/600/700，英文及数字用 Inter，中文回退到本机系统字体；不在运行时请求 Google Fonts。跨功能图标用项目自己的 SVG 组件提供。
+- 适用限制：系统中文字体会因设备而异；本地字体打包不代表物理断网场景已测试。是否存在非本机资源请求需核对构建预览，实际结果见阶段记录。

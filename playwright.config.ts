@@ -12,7 +12,7 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'npm run dev',
+    command: process.env.FX_E2E_PREVIEW === '1' ? 'npm run start' : 'npm run dev',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: false,
     timeout: 30_000,

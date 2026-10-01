@@ -112,6 +112,7 @@ test('写入失败保留未保存持仓，重试只保存一次交易', async ({
   await expect(page.getByRole('alert')).toContainText('模拟磁盘配额不足')
   await expect(page.getByRole('button', { name: '下一根', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '平仓', exact: true })).toBeDisabled()
+  await page.screenshot({ path: 'test-results/design-save-failure.png', fullPage: true })
   expect(await readSnapshot(page)).toEqual(previous)
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出当前快照', exact: true }).click()
