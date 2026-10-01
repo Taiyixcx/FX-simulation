@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { TickMarkType } from 'lightweight-charts'
 import type { MarketFrame, Position, TradeRecord } from '../../src/engine/types'
 import {
+  advanceViewport,
   buildTradeMarkers,
+  clampViewport,
   formatChartTime,
   formatTimeAxisTick,
-  includeVisibleTradePrices,
+  getVisiblePriceRange,
+  initialViewport,
   toCandlestickPoint,
   toLinePoint,
-  toTimeSec,
+  toTimestampKey,
 } from '../../src/features/chart/chartData'
 
 const FIRST_TIMESTAMP_MS = Date.parse('2024-03-04T08:01:00Z')
@@ -34,41 +36,33 @@ const LONG_POSITION: Position = {
 }
 
 describe('chart data adapter', () => {
-  it('keeps chart timestamps in UTC seconds and displays Asia/Shanghai time', () => {
-    const timeSec = toTimeSec(FIRST_TIMESTAMP_MS)
-    expect(timeSec).toBe(1709539260)
-    expect(formatChartTime(timeSec)).toBe('2024/03/04 16:01')
-    expect(formatTimeAxisTick(timeSec, TickMarkType.Time)).toBe('16:01')
-    expect(formatChartTime(toTimeSec(Date.parse('2024-03-04T16:01:00Z'))))
-      .toBe('2024/03/05 00:01')
+  it('keeps category timestamps as UTC millisecond strings and displays Asia/Shanghai time', () => {
+    expect(toTimestampKey(FIRST_TIMESTAMP_MS)).toBe('1709539260000')
+    expect(formatChartTime(FIRST_TIMESTAMP_MS)).toBe('2024/03/04 16:01')
+    expect(formatTimeAxisTick(toTimestampKey(FIRST_TIMESTAMP_MS))).toBe('16:01')
+    expect(formatChartTime(Date.parse('2024-03-04T16:01:00Z'))).toBe('2024/03/05 00:01')
   })
 
-  it('adapts only Bid OHLC without modifying decimal business prices', () => {
+  it('adapts Bid candles in ECharts open-close-low-high order without changing business prices', () => {
     const frame = createFrame(FIRST_TIMESTAMP_MS)
-    expect(toLinePoint(frame)).toEqual({ time: 1709539260, value: 1.1 })
-    expect(toCandlestickPoint(frame)).toEqual({
-      time: 1709539260,
-      open: 1.0999,
-      high: 1.1002,
-      low: 1.0998,
-      close: 1.1,
-    })
+    expect(toLinePoint(frame)).toBe(1.1)
+    expect(toCandlestickPoint(frame)).toEqual([1.0999, 1.1, 1.0998, 1.1002])
     expect(frame.quote.askPrice).toBe('1.10010')
     expect(frame.closePrice).toBe('1.10000')
   })
 
-  it('places a long entry on its actual Ask instead of the Bid curve', () => {
+  it('places a long entry at its actual Ask with a string category coordinate', () => {
     expect(buildTradeMarkers([createFrame(FIRST_TIMESTAMP_MS)], LONG_POSITION, []))
       .toEqual([expect.objectContaining({
         id: 'position-long-open',
+        timestampKey: '1709539260000',
         price: 1.1001,
-        position: 'atPriceBottom',
-        shape: 'arrowUp',
+        isBuying: true,
         text: '做多开仓·买 1.10010',
       })])
   })
 
-  it('uses buy/sell sides for closed long and short trades in time order', () => {
+  it('uses actual buy/sell sides for closed long and short trades in time order', () => {
     const nextTimestampMs = FIRST_TIMESTAMP_MS + 60_000
     const longTrade: TradeRecord = {
       ...LONG_POSITION,
@@ -77,26 +71,15 @@ describe('chart data adapter', () => {
       realizedPnlUsd: '0.08',
       reason: 'manual',
     }
-    const shortTrade: TradeRecord = {
-      ...longTrade,
-      id: 'position-short',
-      direction: 'short',
-      entryPrice: '1.10000',
-      exitPrice: '1.09910',
-    }
+    const shortTrade: TradeRecord = { ...longTrade, id: 'position-short', direction: 'short', entryPrice: '1.10000', exitPrice: '1.09910' }
     const markers = buildTradeMarkers(
-      [createFrame(FIRST_TIMESTAMP_MS), createFrame(nextTimestampMs)],
-      null,
-      [longTrade, shortTrade],
+      [createFrame(FIRST_TIMESTAMP_MS), createFrame(nextTimestampMs)], null, [longTrade, shortTrade],
     )
-    expect(markers.map((marker) => marker.text)).toEqual([
-      '做多开仓·买 1.10010',
-      '做空开仓·卖 1.10000',
-      '做多平仓·卖 1.10100',
-      '做空平仓·买 1.09910',
+    expect(markers.map(marker => marker.text)).toEqual([
+      '做多开仓·买 1.10010', '做空开仓·卖 1.10000', '做多平仓·卖 1.10100', '做空平仓·买 1.09910',
     ])
-    expect(markers.map((marker) => marker.price)).toEqual([1.1001, 1.1, 1.101, 1.0991])
-    expect(markers.map((marker) => marker.shape)).toEqual(['arrowUp', 'arrowDown', 'arrowDown', 'arrowUp'])
+    expect(markers.map(marker => marker.price)).toEqual([1.1001, 1.1, 1.101, 1.0991])
+    expect(markers.map(marker => marker.isBuying)).toEqual([true, false, false, true])
   })
 
   it('does not create markers for future or absent minutes', () => {
@@ -109,35 +92,60 @@ describe('chart data adapter', () => {
     }
     const frames = [createFrame(FIRST_TIMESTAMP_MS)]
     const futurePosition = { ...LONG_POSITION, openedAtMs: FIRST_TIMESTAMP_MS + 120_000 }
-    expect(buildTradeMarkers(frames, futurePosition, [trade])).toHaveLength(1)
-    expect(buildTradeMarkers(frames, futurePosition, [trade])[0]?.id).toBe('position-long-open')
+    expect(buildTradeMarkers(frames, futurePosition, [trade]).map(marker => marker.id)).toEqual(['position-long-open'])
     expect(buildTradeMarkers([], LONG_POSITION, [trade])).toEqual([])
   })
 
-  it('keeps a closed long entry Ask within the scale above the Bid range', () => {
+  it('includes a closed Ask above the Bid curve with enough scale padding for its marker', () => {
     const frame = createFrame(FIRST_TIMESTAMP_MS)
-    const closedTrade: TradeRecord = {
-      ...LONG_POSITION,
-      closedAtMs: FIRST_TIMESTAMP_MS,
-      exitPrice: frame.quote.bidPrice,
-      realizedPnlUsd: '-0.01',
-      reason: 'manual',
-    }
-    const timeSec = toTimeSec(FIRST_TIMESTAMP_MS)
+    const closedTrade: TradeRecord = { ...LONG_POSITION, closedAtMs: FIRST_TIMESTAMP_MS, exitPrice: frame.quote.bidPrice, realizedPnlUsd: '-0.01', reason: 'manual' }
     const markers = buildTradeMarkers([frame], null, [closedTrade])
-    expect(includeVisibleTradePrices(
-      { minValue: 1.09995, maxValue: 1.10005 }, markers, { from: timeSec, to: timeSec },
-    )).toEqual({ minValue: 1.09995, maxValue: 1.1001 })
+    const range = getVisiblePriceRange([frame], { from: 0, to: 0 }, 'line', markers)
+    expect(range.minValue).toBeLessThan(1.1)
+    expect(range.maxValue).toBeGreaterThan(1.1001)
   })
 
-  it('excludes offscreen closed trades but retains an active horizontal entry line', () => {
-    const markers = buildTradeMarkers([createFrame(FIRST_TIMESTAMP_MS)], LONG_POSITION, [])
-    const nextTimeSec = toTimeSec(FIRST_TIMESTAMP_MS + 60_000)
-    const range = { minValue: 1.1002, maxValue: 1.1003 }
-    expect(includeVisibleTradePrices(range, markers, { from: nextTimeSec, to: nextTimeSec }))
-      .toEqual(range)
-    expect(includeVisibleTradePrices(range, markers, { from: nextTimeSec, to: nextTimeSec }, '1.10010'))
-      .toEqual({ minValue: 1.1001, maxValue: 1.1003 })
-    expect(includeVisibleTradePrices(range, markers, null)).toEqual(range)
+  it('scales to visible candle extremes while excluding offscreen closed trades', () => {
+    const firstFrame = createFrame(FIRST_TIMESTAMP_MS)
+    const nextFrame = createFrame(FIRST_TIMESTAMP_MS + 60_000)
+    const offscreenMarkers = buildTradeMarkers([firstFrame], { ...LONG_POSITION, entryPrice: '1.50000' }, [])
+    const range = getVisiblePriceRange([firstFrame, nextFrame], { from: 1, to: 1 }, 'candlestick', offscreenMarkers)
+    expect(range.minValue).toBeLessThan(Number(nextFrame.lowPrice))
+    expect(range.maxValue).toBeGreaterThan(Number(nextFrame.highPrice))
+    expect(range.maxValue).toBeLessThan(1.2)
+    const activeRange = getVisiblePriceRange([firstFrame, nextFrame], { from: 1, to: 1 }, 'line', offscreenMarkers, '1.50000')
+    expect(activeRange.maxValue).toBeGreaterThan(1.5)
+  })
+
+  it('uses a finite nonzero range for a single flat price', () => {
+    const frame = createFrame(FIRST_TIMESTAMP_MS)
+    const range = getVisiblePriceRange([frame], { from: 0, to: 0 }, 'line', [])
+    expect(range.minValue).toBeCloseTo(1.09992, 8)
+    expect(range.maxValue).toBeCloseTo(1.10008, 8)
+    expect(getVisiblePriceRange([], { from: 0, to: 0 }, 'line', [])).toEqual({ minValue: 0, maxValue: 1 })
+  })
+})
+
+describe('chart viewport', () => {
+  it('contains only progressed indices, including a single centered category', () => {
+    expect(initialViewport(1)).toEqual({ from: 0, to: 0 })
+    expect(initialViewport(50)).toEqual({ from: 0, to: 49 })
+    expect(initialViewport(1440)).toEqual({ from: 1360, to: 1439 })
+    expect(clampViewport({ from: -3, to: 2000 }, 1440)).toEqual({ from: 0, to: 1439 })
+  })
+
+  it('expands the initial view and follows latest with a stable window size', () => {
+    expect(advanceViewport({ from: 0, to: 0 }, 1, 11, true)).toEqual({ from: 0, to: 10 })
+    expect(advanceViewport({ from: 0, to: 74 }, 75, 85, true)).toEqual({ from: 5, to: 84 })
+    expect(advanceViewport({ from: 120, to: 159 }, 160, 170, true)).toEqual({ from: 130, to: 169 })
+  })
+
+  it('preserves absolute historical indices while new frames arrive', () => {
+    expect(advanceViewport({ from: 20, to: 39 }, 100, 110, false)).toEqual({ from: 20, to: 39 })
+    expect(advanceViewport({ from: 20, to: 39 }, 100, 1440, false)).toEqual({ from: 20, to: 39 })
+  })
+
+  it('clamps a saved window when the dataset becomes shorter', () => {
+    expect(advanceViewport({ from: 70, to: 99 }, 100, 20, false)).toEqual({ from: 19, to: 19 })
   })
 })

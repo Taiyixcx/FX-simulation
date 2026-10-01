@@ -1,35 +1,30 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import {
-  CandlestickSeries,
-  ColorType,
-  CrosshairMode,
-  LineSeries,
-  LineStyle,
-  createChart,
-  createSeriesMarkers,
-} from 'lightweight-charts'
-import type {
-  AutoscaleInfoProvider,
-  IChartApi,
-  IPriceLine,
-  ISeriesApi,
-  ISeriesMarkersPluginApi,
-  MouseEventParams,
-  SeriesMarker,
-  Time,
-} from 'lightweight-charts'
+import { init, use } from 'echarts/core'
+import type { EChartsType } from 'echarts/core'
+import { CandlestickChart, LineChart } from 'echarts/charts'
+import { DataZoomComponent, GridComponent, MarkLineComponent, MarkPointComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import type { CandlestickSeriesOption, EChartsOption, LineSeriesOption } from 'echarts'
+import Icon from '../../components/Icon.vue'
+import InfoTip from '../../components/InfoTip.vue'
 import type { MarketFrame, Position, TradeRecord } from '../../engine/types'
 import {
+  advanceViewport,
   buildTradeMarkers,
+  clampViewport,
   formatChartPrice,
   formatChartTime,
   formatTimeAxisTick,
-  includeVisibleTradePrices,
+  getVisiblePriceRange,
+  initialViewport,
   toCandlestickPoint,
   toLinePoint,
-  toTimeSec,
+  toTimestampKey,
 } from './chartData'
+import type { ChartViewport, TradeMarker } from './chartData'
+
+use([LineChart, CandlestickChart, GridComponent, TooltipComponent, DataZoomComponent, MarkPointComponent, MarkLineComponent, CanvasRenderer])
 
 const props = defineProps<{
   frames: MarketFrame[]
@@ -41,86 +36,139 @@ const props = defineProps<{
 
 const chartElement = ref<HTMLDivElement | null>(null)
 const hoveredFrame = shallowRef<MarketFrame | null>(null)
+const viewport = ref<ChartViewport>({ from: 0, to: 0 })
+const isFollowingLatest = ref(true)
+const markers = shallowRef<TradeMarker[]>([])
+const priceRange = ref({ minValue: 0, maxValue: 1 })
+const instanceId = ref('')
 const detailFrame = computed(() => hoveredFrame.value ?? props.frames.at(-1))
 const detailTime = computed(() => detailFrame.value
-  ? formatChartTime(toTimeSec(detailFrame.value.quote.timestampMs))
-  : '暂无行情')
+  ? formatChartTime(detailFrame.value.quote.timestampMs)
+  : '等待行情')
+const markerPrices = computed(() => markers.value.map(marker => marker.price.toFixed(5)).join(','))
 
-let chart: IChartApi | null = null
-let series: ISeriesApi<'Line' | 'Candlestick'> | null = null
-let seriesMarkers: ISeriesMarkersPluginApi<Time> | null = null
-let entryPriceLine: IPriceLine | null = null
+let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let renderedSessionId: string | null = null
 let renderedChartType: 'line' | 'candlestick' | null = null
 let renderedFrameCount = 0
 let renderedFirstTimestampMs: number | undefined
 let renderedLastTimestampMs: number | undefined
-let tradeMarkers: SeriesMarker<Time>[] = []
-const framesByTimeSec = new Map<number, MarketFrame>()
+let timestampKeys: string[] = []
+let linePoints: number[] = []
+let candlePoints: [number, number, number, number][] = []
 
-function handleCrosshairMove(event: MouseEventParams<Time>): void {
-  hoveredFrame.value = typeof event.time === 'number'
-    ? framesByTimeSec.get(event.time) ?? null
-    : null
+function updatePriceRange(): void {
+  priceRange.value = getVisiblePriceRange(
+    props.frames, viewport.value, props.chartType, markers.value, props.position?.entryPrice ?? null,
+  )
 }
 
-function updateTradeAnnotations(): void {
-  if (!series) return
-  tradeMarkers = buildTradeMarkers(props.frames, props.position, props.trades)
-  seriesMarkers?.setMarkers(tradeMarkers)
-  if (entryPriceLine) {
-    series.removePriceLine(entryPriceLine)
-    entryPriceLine = null
+function createSeries(): LineSeriesOption | CandlestickSeriesOption {
+  const fromTimestampMs = props.frames[viewport.value.from]?.quote.timestampMs ?? 0
+  const toTimestampMs = props.frames[viewport.value.to]?.quote.timestampMs ?? 0
+  const visibleMarkers = markers.value.filter(marker => marker.timestampMs >= fromTimestampMs && marker.timestampMs <= toTimestampMs)
+  const rightInsetIndex = viewport.value.to - Math.ceil((viewport.value.to - viewport.value.from) * .2)
+  const nearRightTimestampMs = viewport.value.to > viewport.value.from
+    ? props.frames[rightInsetIndex]?.quote.timestampMs ?? Infinity : Infinity
+  const availablePlotWidth = (chartElement.value?.clientWidth ?? 0) - chartFontSize() * 6.2 - 20
+  // At enlarged text sizes the actual marker already names this same entry price.
+  const hasVisibleEntryMarker = visibleMarkers.some(marker => marker.id === `${props.position?.id}-open`)
+  const canShowEntryLabel = availablePlotWidth > chartFontSize() * (hasVisibleEntryMarker ? 14 : 8)
+  const common = {
+    id: 'market-price',
+    name: 'Bid',
+    animation: false,
+    clip: true,
+    markPoint: {
+      animation: false,
+      symbol: 'triangle',
+      symbolSize: 12,
+      data: visibleMarkers.map(marker => ({
+        name: marker.text,
+        coord: [marker.timestampKey, marker.price],
+        value: marker.price,
+        symbolRotate: marker.isBuying ? 0 : 180,
+        itemStyle: { color: marker.isBuying ? '#177b67' : '#b34e4a', borderColor: '#fff', borderWidth: 1 },
+        label: {
+          show: visibleMarkers.length <= 6,
+          position: marker.isBuying ? 'top' as const : 'bottom' as const,
+          align: marker.timestampMs >= nearRightTimestampMs ? 'right' as const : 'center' as const,
+          offset: marker.timestampMs >= nearRightTimestampMs ? [-10, 0] : [0, 0],
+          distance: 8,
+          formatter: `${marker.isBuying ? '买' : '卖'} ${formatChartPrice(marker.price)}`,
+          color: marker.isBuying ? '#177b67' : '#b34e4a',
+          fontSize: chartFontSize(),
+          backgroundColor: '#fff',
+          padding: [2, 4],
+          borderRadius: 3,
+        },
+      })),
+    },
+    markLine: {
+      silent: true,
+      animation: false,
+      // Its default precision of 2 would round an FX entry out of the visible range.
+      precision: 5,
+      symbol: 'none',
+      lineStyle: { color: props.position?.direction === 'long' ? '#177b67' : '#b34e4a', type: 'dashed' as const, width: 1 },
+      label: {
+        show: canShowEntryLabel,
+        position: 'insideStartTop' as const,
+        formatter: props.position ? `开仓 ${formatChartPrice(props.position.entryPrice)}` : '',
+        color: props.position?.direction === 'long' ? '#177b67' : '#b34e4a',
+        fontSize: chartFontSize(),
+        backgroundColor: '#fff',
+        padding: [2, 4],
+      },
+      data: props.position ? [{ yAxis: Number(props.position.entryPrice) }] : [],
+    },
   }
-  if (props.position) {
-    entryPriceLine = series.createPriceLine({
-      price: Number(props.position.entryPrice),
-      color: props.position.direction === 'long' ? '#176b56' : '#a64237',
-      lineWidth: 1,
-      lineStyle: LineStyle.Dashed,
-      axisLabelVisible: true,
-    })
+  return props.chartType === 'line'
+    ? { ...common, type: 'line', data: linePoints, smooth: false, showSymbol: props.frames.length === 1, symbolSize: 7, lineStyle: { color: '#4263eb', width: 2 }, itemStyle: { color: '#4263eb' }, emphasis: { disabled: true } }
+    : { ...common, type: 'candlestick', data: candlePoints, barMaxWidth: 12, itemStyle: { color: '#177b67', color0: '#b34e4a', borderColor: '#177b67', borderColor0: '#b34e4a' }, emphasis: { disabled: true } }
+}
+
+function chartFontSize(): number {
+  return chartElement.value ? Number.parseFloat(getComputedStyle(chartElement.value).fontSize) || 14 : 14
+}
+
+function viewOption(): EChartsOption {
+  return {
+    yAxis: { min: priceRange.value.minValue, max: priceRange.value.maxValue },
+    dataZoom: [{ id: 'market-window', startValue: viewport.value.from, endValue: viewport.value.to }],
   }
 }
 
-function replaceSeries(): void {
+function applyViewport(nextViewport: ChartViewport): void {
   if (!chart) return
-  seriesMarkers?.detach()
-  seriesMarkers = null
-  entryPriceLine = null
-  if (series) chart.removeSeries(series)
-  const autoscaleInfoProvider: AutoscaleInfoProvider = (getDefault) => {
-    const scale = getDefault()
-    if (!scale?.priceRange) return scale
-    return {
-      ...scale,
-      priceRange: includeVisibleTradePrices(
-        scale.priceRange,
-        tradeMarkers,
-        chart?.timeScale().getVisibleRange() ?? null,
-        props.position?.entryPrice ?? null,
-      ),
-    }
-  }
-  const commonOptions = {
-    priceFormat: { type: 'price' as const, precision: 5, minMove: 0.00001 },
-    priceLineVisible: false,
-    autoscaleInfoProvider,
-  }
-  series = props.chartType === 'line'
-    ? chart.addSeries(LineSeries, { ...commonOptions, color: '#2561a6', lineWidth: 2 })
-    : chart.addSeries(CandlestickSeries, {
-      ...commonOptions,
-      upColor: '#237c67',
-      downColor: '#b9554a',
-      borderUpColor: '#237c67',
-      borderDownColor: '#b9554a',
-      wickUpColor: '#237c67',
-      wickDownColor: '#b9554a',
-    })
-  seriesMarkers = createSeriesMarkers(series, [], { autoScale: true })
+  viewport.value = clampViewport(nextViewport, props.frames.length)
+  isFollowingLatest.value = viewport.value.to === props.frames.length - 1
+  updatePriceRange()
+  chart.setOption({ ...viewOption(), series: [createSeries()] })
 }
+
+function handleDataZoom(event: unknown): void {
+  if (!event || typeof event !== 'object') return
+  const payload = event as { start?: number; end?: number; batch?: { start?: number; end?: number }[] }
+  const range = payload.batch?.[0] ?? payload
+  if (typeof range.start !== 'number' || typeof range.end !== 'number') return
+  const lastIndex = Math.max(0, props.frames.length - 1)
+  // ECharts emits percentages; immediately store absolute indices before any append.
+  applyViewport({ from: range.start * lastIndex / 100, to: range.end * lastIndex / 100 })
+}
+
+function handleAxisPointer(event: unknown): void {
+  if (!event || typeof event !== 'object') return
+  const payload = event as { axesInfo?: { axisDim?: string; value?: string | number }[] }
+  const axisValue = payload.axesInfo?.find(axis => axis.axisDim === 'x')?.value
+  const index = typeof axisValue === 'string'
+    ? timestampKeys.indexOf(axisValue)
+    : typeof axisValue === 'number' ? Math.round(axisValue) : -1
+  hoveredFrame.value = props.frames[index] ?? null
+}
+
+function clearHover(): void { hoveredFrame.value = null }
 
 function syncChart(): void {
   if (!chart) return
@@ -129,84 +177,137 @@ function syncChart(): void {
   const firstTimestampMs = props.frames[0]?.quote.timestampMs
   const isPrefixChanged = firstTimestampMs !== renderedFirstTimestampMs
     || props.frames.length < renderedFrameCount
-    || (renderedFrameCount > 0
-      && props.frames[renderedFrameCount - 1]?.quote.timestampMs !== renderedLastTimestampMs)
-  const shouldReplaceData = isNewSession || isTypeChanged || isPrefixChanged || !series
-  const previousRange = !isNewSession ? chart.timeScale().getVisibleLogicalRange() : null
-
-  if (isTypeChanged || !series) replaceSeries()
-  if (!series) return
-  if (shouldReplaceData) {
-    series.setData(props.chartType === 'line'
-      ? props.frames.map(toLinePoint)
-      : props.frames.map(toCandlestickPoint))
-    framesByTimeSec.clear()
-    for (const frame of props.frames) framesByTimeSec.set(toTimeSec(frame.quote.timestampMs), frame)
+    || (renderedFrameCount > 0 && props.frames[renderedFrameCount - 1]?.quote.timestampMs !== renderedLastTimestampMs)
+  if (isNewSession || isPrefixChanged) {
+    timestampKeys = []
+    linePoints = []
+    candlePoints = []
+    renderedFrameCount = 0
+    viewport.value = initialViewport(props.frames.length)
+    isFollowingLatest.value = true
     hoveredFrame.value = null
-    if (isNewSession) {
-      chart.timeScale().setVisibleLogicalRange({ from: -20, to: Math.max(20, props.frames.length + 3) })
-    } else if (previousRange) {
-      chart.timeScale().setVisibleLogicalRange(previousRange)
-    }
-  } else {
-    // Completed minutes are immutable. Only append the newly revealed prefix.
-    for (let index = renderedFrameCount; index < props.frames.length; index += 1) {
-      const frame = props.frames[index]
-      if (!frame) continue
-      series.update(props.chartType === 'line' ? toLinePoint(frame) : toCandlestickPoint(frame))
-      framesByTimeSec.set(toTimeSec(frame.quote.timestampMs), frame)
-    }
+  } else if (renderedFrameCount !== props.frames.length) {
+    viewport.value = advanceViewport(viewport.value, renderedFrameCount, props.frames.length, isFollowingLatest.value)
   }
+  // Completed frames are immutable; adapt only newly progressed minutes.
+  for (let index = renderedFrameCount; index < props.frames.length; index += 1) {
+    const frame = props.frames[index]!
+    timestampKeys.push(toTimestampKey(frame.quote.timestampMs))
+    linePoints.push(toLinePoint(frame))
+    candlePoints.push(toCandlestickPoint(frame))
+  }
+  markers.value = buildTradeMarkers(props.frames, props.position, props.trades)
+  updatePriceRange()
+  chart.setOption({
+    ...viewOption(),
+    xAxis: { data: timestampKeys },
+    series: [createSeries()],
+  }, { replaceMerge: isTypeChanged ? ['series'] : undefined })
   renderedSessionId = props.sessionId
   renderedChartType = props.chartType
   renderedFrameCount = props.frames.length
   renderedFirstTimestampMs = firstTimestampMs
   renderedLastTimestampMs = props.frames.at(-1)?.quote.timestampMs
-  updateTradeAnnotations()
 }
 
 function scrollToLatest(): void {
-  chart?.timeScale().scrollToRealTime()
+  hoveredFrame.value = null
+  applyViewport(initialViewport(props.frames.length))
+}
+
+function handleChartKeydown(event: KeyboardEvent): void {
+  const visibleCount = viewport.value.to - viewport.value.from + 1
+  const lastIndex = Math.max(0, props.frames.length - 1)
+  let nextViewport: ChartViewport | null = null
+  if (event.key === 'End') {
+    event.preventDefault()
+    scrollToLatest()
+    return
+  }
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    const step = Math.max(1, Math.round(visibleCount / 5)) * (event.key === 'ArrowLeft' ? -1 : 1)
+    const from = Math.max(0, Math.min(Math.max(0, lastIndex - visibleCount + 1), viewport.value.from + step))
+    nextViewport = { from, to: from + visibleCount - 1 }
+  } else if (event.key === '+' || event.key === '=' || event.key === '-') {
+    const nextCount = Math.min(props.frames.length, Math.max(2, Math.round(visibleCount * (event.key === '-' ? 1.5 : 0.7))))
+    const center = (viewport.value.from + viewport.value.to) / 2
+    const from = Math.max(0, Math.min(Math.max(0, lastIndex - nextCount + 1), Math.round(center - (nextCount - 1) / 2)))
+    nextViewport = { from, to: from + nextCount - 1 }
+  }
+  if (nextViewport) {
+    event.preventDefault()
+    clearHover()
+    applyViewport(nextViewport)
+  }
+}
+
+function resizeChart(): void {
+  if (!chart || !chartElement.value) return
+  chart.resize()
+  const fontSize = chartFontSize()
+  chart.setOption({
+    textStyle: { fontSize },
+    grid: { left: chartElement.value.clientWidth < 500 ? 8 : 20, right: fontSize * 6.2, top: 20, bottom: fontSize * 2.6 },
+    xAxis: { axisLabel: { fontSize }, axisPointer: { label: { fontSize } } },
+    yAxis: { axisLabel: { fontSize }, axisPointer: { label: { fontSize } } },
+    series: [createSeries()],
+  })
 }
 
 onMounted(() => {
   if (!chartElement.value) return
-  const container = chartElement.value
-  chart = createChart(container, {
-    width: container.clientWidth,
-    height: container.clientHeight,
-    layout: {
-      background: { type: ColorType.Solid, color: '#ffffff' },
-      textColor: '#526073',
-      fontSize: 14,
-      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
-      attributionLogo: true,
+  chart = init(chartElement.value, undefined, { renderer: 'canvas' })
+  instanceId.value = chart.id
+  chart.setOption({
+    animation: false,
+    textStyle: { fontFamily: 'Inter, "Microsoft YaHei", system-ui, sans-serif', fontSize: chartFontSize(), color: '#637188' },
+    grid: { left: 20, right: 87, top: 20, bottom: 36 },
+    tooltip: {
+      trigger: 'axis',
+      showContent: false,
+      axisPointer: { type: 'cross', lineStyle: { color: '#a3b0c5', type: 'dashed' }, crossStyle: { color: '#a3b0c5', type: 'dashed' }, label: { backgroundColor: '#637188' } },
     },
-    grid: { vertLines: { color: '#edf0f3' }, horzLines: { color: '#edf0f3' } },
-    crosshair: { mode: CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#dce2e8', scaleMargins: { top: 0.18, bottom: 0.16 } },
-    timeScale: {
-      borderColor: '#dce2e8',
-      timeVisible: true,
-      secondsVisible: false,
-      rightOffset: 4,
-      tickMarkFormatter: formatTimeAxisTick,
-      shiftVisibleRangeOnNewBar: true,
+    xAxis: {
+      type: 'category',
+      boundaryGap: true,
+      data: [],
+      axisLine: { lineStyle: { color: '#e7ecf3' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#7a879a', margin: 14, hideOverlap: true, formatter: formatTimeAxisTick },
+      splitLine: { show: false },
+      axisPointer: { label: { formatter: (params: { value: unknown }) => formatTimeAxisTick(String(params.value)) } },
     },
-    localization: { locale: 'zh-CN', timeFormatter: formatChartTime },
-    handleScroll: { vertTouchDrag: false },
+    yAxis: {
+      type: 'value',
+      position: 'right',
+      scale: true,
+      splitNumber: 4,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: '#7a879a', margin: 12, formatter: (price: number) => formatChartPrice(price) },
+      splitLine: { lineStyle: { color: '#edf1f6', width: 1 } },
+      axisPointer: { label: { formatter: (params: { value: unknown }) => formatChartPrice(Number(params.value)) } },
+    },
+    dataZoom: [{
+      id: 'market-window',
+      type: 'inside',
+      xAxisIndex: 0,
+      filterMode: 'none',
+      rangeMode: ['value', 'value'],
+      zoomOnMouseWheel: true,
+      moveOnMouseMove: true,
+      moveOnMouseWheel: false,
+      preventDefaultMouseMove: false,
+      throttle: 30,
+    }],
   })
-  chart.subscribeCrosshairMove(handleCrosshairMove)
-  resizeObserver = new ResizeObserver(() => {
-    const fontSize = Number.parseFloat(getComputedStyle(container).fontSize)
-    chart?.applyOptions({
-      width: container.clientWidth,
-      height: container.clientHeight,
-      layout: { fontSize: Number.isFinite(fontSize) ? fontSize : 14 },
-    })
-  })
-  resizeObserver.observe(container)
+  chart.on('datazoom', handleDataZoom)
+  chart.on('updateAxisPointer', handleAxisPointer)
+  chart.getZr().on('globalout', clearHover)
+  resizeObserver = new ResizeObserver(resizeChart)
+  resizeObserver.observe(chartElement.value)
   syncChart()
+  resizeChart()
 })
 
 watch([
@@ -214,127 +315,83 @@ watch([
   () => props.chartType,
   () => props.frames,
   () => props.frames.length,
+  () => props.position,
+  () => props.trades,
+  () => props.trades.length,
 ], syncChart, { flush: 'post' })
-watch([() => props.position, () => props.trades, () => props.trades.length], updateTradeAnnotations, {
-  flush: 'post',
-})
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
-  chart?.unsubscribeCrosshairMove(handleCrosshairMove)
-  seriesMarkers?.detach()
-  seriesMarkers = null
-  chart?.remove()
+  chart?.off('datazoom', handleDataZoom)
+  chart?.off('updateAxisPointer', handleAxisPointer)
+  chart?.getZr().off('globalout', clearHover)
+  chart?.dispose()
   chart = null
-  series = null
-  entryPriceLine = null
-  tradeMarkers = []
-  framesByTimeSec.clear()
 })
 </script>
 
 <template>
   <section class="market-chart" aria-label="已推进的 Bid 行情图表">
     <div class="chart-details">
-      <div class="chart-legend">
-        <span>{{ hoveredFrame ? '十字线' : '最新行情' }} {{ detailTime }}（UTC+8）</span>
-        <template v-if="detailFrame">
-          <span v-if="chartType === 'line'">Bid {{ formatChartPrice(detailFrame.quote.bidPrice) }}</span>
-          <template v-else>
-            <span>开 {{ formatChartPrice(detailFrame.openPrice) }}</span>
-            <span>高 {{ formatChartPrice(detailFrame.highPrice) }}</span>
-            <span>低 {{ formatChartPrice(detailFrame.lowPrice) }}</span>
-            <span>收 {{ formatChartPrice(detailFrame.closePrice) }}</span>
-          </template>
-        </template>
-        <span v-if="position" class="entry-legend">
-          开仓线：{{ position.direction === 'long' ? '做多 Ask' : '做空 Bid' }}
-          {{ formatChartPrice(position.entryPrice) }}
-        </span>
+      <div class="chart-readout" data-testid="chart-readout">
+        <div class="chart-time tabular" data-testid="chart-time">
+          <span class="chart-mode">{{ hoveredFrame ? '十字线' : '最新' }}</span>
+          {{ detailTime }} <span class="timezone">UTC+8</span>
+          <InfoTip label="图表操作说明">图表只显示已推进的一分钟 Bid 行情。K 线的开、高、低、收分别表示该分钟的开盘价、最高价、最低价和收盘价。移动指针查看时间与价格，滚轮缩放、拖动平移。聚焦图表后，左右方向键平移，+ / − 缩放，End 回到最新。买卖标记位于实际成交价格；虚线表示当前持仓的开仓价。</InfoTip>
+        </div>
+        <div v-if="detailFrame && chartType === 'candlestick'" class="ohlc-readout tabular">
+          <span><span class="muted">开</span> {{ formatChartPrice(detailFrame.openPrice) }}</span>
+          <span><span class="muted">高</span> {{ formatChartPrice(detailFrame.highPrice) }}</span>
+          <span><span class="muted">低</span> {{ formatChartPrice(detailFrame.lowPrice) }}</span>
+          <span><span class="muted">收</span> {{ formatChartPrice(detailFrame.closePrice) }}</span>
+        </div>
+        <span v-else-if="hoveredFrame" class="hover-price tabular">Bid {{ formatChartPrice(hoveredFrame.quote.bidPrice) }}</span>
       </div>
-      <button type="button" class="latest-button" @click="scrollToLatest">回到最新</button>
+      <button type="button" class="latest-button button-quiet" :class="{ 'is-following': isFollowingLatest }" @click="scrollToLatest"><Icon name="arrow-right" :size="16" />回到最新</button>
     </div>
-    <div ref="chartElement" class="chart-canvas" data-testid="market-chart" />
-    <p v-if="chartType === 'candlestick'" class="chart-explanation">
-      每根 K 线表示一分钟的 Bid 开盘、最高、最低和收盘价。
-    </p>
-    <p class="chart-attribution">
-      TradingView Lightweight Charts™<br>
-      Copyright (с) 2025 TradingView, Inc.
-      <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">https://www.tradingview.com/</a>
-    </p>
+    <div class="chart-stage">
+      <div
+        ref="chartElement"
+        class="chart-canvas"
+        data-testid="market-chart"
+        :data-chart-instance-id="instanceId"
+        :data-frame-count="frames.length"
+        :data-viewport-from="viewport.from"
+        :data-viewport-to="viewport.to"
+        :data-price-min="priceRange.minValue"
+        :data-price-max="priceRange.maxValue"
+        :data-marker-count="markers.length"
+        :data-marker-prices="markerPrices"
+        role="img"
+        aria-label="已推进的行情。方向键平移，加减键缩放，End 回到最新。"
+        tabindex="0"
+        @keydown="handleChartKeydown"
+      />
+      <span v-if="frames.length === 1" class="initial-state"><span class="initial-dot" />首根行情 · 待推进</span>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.market-chart {
-  min-width: 0;
-}
-
-.chart-details {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 0;
-}
-
-.chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 1rem;
-  color: #526073;
-  font-size: 0.875rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.latest-button {
-  flex: 0 0 auto;
-  padding: 0.2rem 0.4rem;
-  border: 0;
-  background: transparent;
-  color: #2561a6;
-  font: inherit;
-  font-size: 0.875rem;
-  cursor: pointer;
-}
-
-.entry-legend {
-  color: #33465e;
-}
-
-.latest-button:focus-visible {
-  outline: 2px solid #2561a6;
-  outline-offset: 2px;
-}
-
-.chart-canvas {
-  width: 100%;
-  height: clamp(18rem, 40vw, 29rem);
-  font-size: 0.875rem;
-}
-
-.chart-explanation,
-.chart-attribution {
-  margin: 0.5rem 0 0;
-  color: #526073;
-  font-size: 0.875rem;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.chart-attribution a {
-  color: #2561a6;
-}
-
-@media (max-width: 520px) {
-  .chart-details {
-    flex-wrap: wrap;
-  }
-
-  .chart-canvas {
-    height: 20rem;
-  }
+.market-chart { min-width: 0; }
+.chart-details { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 0 0; min-height: 3.25rem; }
+.chart-readout { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; color: var(--muted); font-size: .875rem; }
+.chart-time { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.chart-mode { color: var(--text); font-weight: 500; margin-right: 2px; }
+.timezone { color: #7a879a; }
+.ohlc-readout { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--text); }
+.hover-price { color: var(--text); }
+.latest-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 0 0 auto; min-height: 2rem; padding: 4px 8px; font-size: .875rem; }
+.latest-button.is-following { color: var(--blue); }
+.chart-stage { position: relative; }
+.chart-canvas { width: 100%; height: 24.375rem; font-size: .875rem; touch-action: pan-y; }
+.chart-canvas:focus-visible { outline-offset: -3px; }
+.initial-state { position: absolute; bottom: 3.5rem; left: 24px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .875rem; pointer-events: none; }
+.initial-dot { width: 6px; height: 6px; border-radius: 50%; background: #a3b0c5; }
+@media (max-width: 600px) {
+  .chart-details { flex-wrap: wrap; padding: 8px 0 0; gap: 4px 12px; }
+  .chart-canvas { height: 20.625rem; }
+  .initial-state { left: 16px; }
 }
 </style>
