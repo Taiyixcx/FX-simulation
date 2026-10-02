@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useSessionStore } from '../../stores/useSessionStore'
 import Icon from '../../components/Icon.vue'
 import InfoTip from '../../components/InfoTip.vue'
@@ -9,6 +9,11 @@ const frameCount = computed(() => session.snapshot?.frames.length ?? 0)
 const maxFrames = computed(() => session.snapshot?.sourceState.maxFrames ?? 0)
 const progressPercent = computed(() => maxFrames.value ? frameCount.value / maxFrames.value * 100 : 0)
 const playbackState = computed(() => session.isEnded ? '已结束' : session.isPlaying ? '播放中' : '已暂停')
+const isIncrementalProgress = ref(false)
+
+watch(frameCount, (count, previousCount) => {
+  isIncrementalProgress.value = count === previousCount + 1
+})
 
 function changeSpeed(event: Event) {
   const speed = Number((event.target as HTMLSelectElement).value)
@@ -35,22 +40,27 @@ function togglePlayback() {
       </div>
       <span class="progress number" data-testid="progress"><span>{{ frameCount }} / {{ maxFrames }} 根</span><span class="playback-state" :class="{ 'is-playing': session.isPlaying }"> · {{ playbackState }}</span></span>
     </div>
-    <div class="progress-track" role="progressbar" aria-label="已推进行情" :aria-valuenow="frameCount" :aria-valuemin="0" :aria-valuemax="maxFrames" :aria-valuetext="`${frameCount} / ${maxFrames} 根，${playbackState}`"><span :style="{ width: `${progressPercent}%` }" /></div>
+    <div class="progress-track" role="progressbar" aria-label="已推进行情" :aria-valuenow="frameCount" :aria-valuemin="0" :aria-valuemax="maxFrames" :aria-valuetext="`${frameCount} / ${maxFrames} 根，${playbackState}`"><span :class="{ 'is-incremental': isIncrementalProgress }" :style="{ width: `${progressPercent}%` }" /></div>
   </div>
 </template>
 
 <style scoped>
-.replay-controls { border-top: 1px solid var(--line); padding: 16px 0 0; }
-.replay-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding-bottom: 16px; }
+.replay-controls { border-top: 1px solid var(--line); padding: 14px 0 0; }
+.replay-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding-bottom: 14px; }
 .playback-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.playback-actions button { display: inline-flex; justify-content: center; align-items: center; gap: 8px; min-height: 40px; padding: 8px 14px; font-size: .875rem; }
+.playback-actions button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 40px; padding: 8px 13px; border-radius: 6px; font-size: .875rem; }
+.playback-actions :deep(svg) { flex: none; }
 .playback-toggle { min-width: 5.5rem; }
-.speed-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.speed-control label { color: var(--muted); font-size: .875rem; }
-.speed-control select { min-height: 40px; padding: 8px 24px 8px 10px; font-size: .875rem; background: var(--surface-soft); }
-.progress { display: flex; flex-wrap: wrap; align-items: center; margin-left: auto; color: var(--muted); font-size: .875rem; line-height: 1.6; }
+.next-frame { color: var(--text); }
+.speed-control { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.speed-control label { color: var(--muted); font-size: .8125rem; }
+.speed-control select { min-height: 40px; padding: 7px 26px 7px 10px; border-color: var(--line-strong); border-radius: 6px; font-size: .875rem; background: var(--surface-soft); }
+.progress { display: flex; flex-wrap: wrap; align-items: center; margin-left: auto; color: var(--muted); font-size: .8125rem; line-height: 1.6; }
+.playback-state { white-space: nowrap; }
 .playback-state.is-playing { color: var(--blue); }
-.progress-track { height: 3px; background: var(--line); overflow: hidden; }
-.progress-track span { display: block; height: 100%; min-width: 3px; background: var(--blue); }
-@media (max-width: 600px) { .replay-toolbar { gap: 12px 16px; } .progress { flex-basis: 100%; margin-left: 0; } }
+.progress-track { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.progress-track span { display: block; height: 100%; background: var(--blue); }
+.progress-track span.is-incremental { transition: width 100ms linear; }
+@media (max-width: 600px) { .replay-toolbar { gap: 12px 16px; } .playback-actions button, .speed-control select { min-height: 44px; } .progress { flex-basis: 100%; margin-left: 0; } }
+@media (prefers-reduced-motion: reduce) { .progress-track span.is-incremental { transition: none; } }
 </style>

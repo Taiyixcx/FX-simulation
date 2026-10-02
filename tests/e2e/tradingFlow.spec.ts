@@ -110,6 +110,7 @@ test('写入失败保留未保存持仓，重试只保存一次交易', async ({
   await page.getByRole('button', { name: '买涨（做多）', exact: true }).click()
   await expect(page.getByTestId('save-status')).toHaveText('保存失败')
   await expect(page.getByRole('alert')).toContainText('模拟磁盘配额不足')
+  await expect(page.locator('#session-error')).toBeFocused()
   await expect(page.getByRole('button', { name: '下一根', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '平仓', exact: true })).toBeDisabled()
   await page.screenshot({ path: 'test-results/design-save-failure.png', fullPage: true })

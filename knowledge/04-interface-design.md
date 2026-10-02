@@ -24,7 +24,7 @@
 
 | 编号 / 机构 | 官方来源 / 资料类型 | 核对结论 | 对应设计与适用限制 |
 | --- | --- | --- | --- |
-| V12 Atlassian | [Motion](https://atlassian.design/foundations/motion) · 官方规范 | 高频交互短促，进入与退出节奏有区别；需要响应减少动效设置，避免动画争夺注意力 | 控件约 120–140ms、提示约 160ms 是本项目候选参数，不是跨产品强制标准 |
+| V12 Atlassian | [Motion](https://atlassian.design/foundations/motion) · 官方规范 | 高频交互短促，进入与退出节奏有区别；需要响应减少动效设置，避免动画争夺注意力 | 项目实际动效参数在 [产品与设计](../overview/01-product-and-design.md#视觉与图表) 维护，属于本项目取舍，不是跨产品强制标准 |
 | V13 Atlassian | [Border](https://atlassian.design/foundations/border) · 官方规范 | 普通边框与分隔使用较细尺度，选中及焦点强调有不同宽度 | 对应 1px 分隔、2px focus/状态边线；颜色和文字仍必须共同表达状态 |
 | V14 Carbon / IBM | [Data table accessibility](https://www.carbondesignsystem.com/building-blocks/core/components/data-table/accessibility) · 官方可访问性指南 | 表格需可访问名称；交互控件、排序和键盘状态有明确要求 | 保留语义表格和详情；没有实现排序就不画排序入口。指南不证明本项目表格已全部达标 |
 | V15 Radix | [Theme overview](https://www.radix-ui.com/themes/docs/theme/overview) · 官方文档 | 变体表达视觉重要性，颜色、间距、字体与形状通过主题组织 | 对应项目 CSS 变量与控件层级。不引入 React/Radix 库，继续现有 Vue 组件 |

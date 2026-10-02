@@ -29,6 +29,32 @@ async function restoreProgressedSession(page: Page, frameCount: number) {
   await waitSaved(page)
 }
 
+test('窄屏交易入口与开平仓保持键盘焦点，记录锚点可到达', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.goto('/')
+  await waitSaved(page)
+  const amountInput = page.getByLabel('交易金额（USD）')
+  await page.getByRole('link', { name: '去下单', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  await expect(amountInput).toBeFocused()
+  await amountInput.fill('500')
+  await page.getByRole('button', { name: '买涨（做多）', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  await waitSaved(page)
+  await expect(page.locator('#position-title')).toBeFocused()
+  await expect(page.getByText('当前已有持仓，请先平仓。', { exact: true })).toBeVisible()
+  await page.getByRole('link', { name: '查看持仓与平仓', exact: true }).click()
+  await expect(page.locator('#position-title')).toBeFocused()
+  await page.getByRole('button', { name: '平仓', exact: true }).click()
+  await waitSaved(page)
+  await expect(amountInput).toBeFocused()
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.getByRole('link', { name: '成交记录', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#trade-journal')).toBeFocused()
+  await expect(page.locator('.table-scroll table')).toBeVisible()
+})
+
 test('帮助提示可用键盘打开、Escape 关闭并返回焦点', async ({ page }) => {
   await page.goto('/')
   await waitSaved(page)

@@ -17,7 +17,7 @@
 - 准备历史数据：读 F08–F12，确认报价类型、时区、时间含义和使用权限，再按项目约定转换、校验。
 - 开发工作台：先读工程笔记 E01–E03、E06–E12，结合 [架构](../overview/02-architecture.md) 确认职责，按 [阶段与验收](../overview/04-roadmap-and-acceptance.md) 推进。
 - 改进交互：比较产品笔记 P01–P15；整页层次、回放分组和按需帮助集中在 P12–P15，本地字体见工程 E19。再看 [产品与设计](../overview/01-product-and-design.md)，选择适合个人练习的组织方式，避免照搬商业平台的完整体系。
-- 改进视觉质感：阅读新增 [V01–V19 设计研究](04-interface-design.md)，结合 [整体美化方案与样稿](../overview/05-interface-redesign.md)，区分参考依据、候选参数和当前实际应用。
+- 改进视觉质感：阅读 [V01–V19 设计研究](04-interface-design.md)，结合 [整体美化方案与样稿](../overview/05-interface-redesign.md)；实际参数只在 [产品与设计](../overview/01-product-and-design.md) 维护，研究和样稿不代替运行验证。
 
 ## 如何使用资料
 
