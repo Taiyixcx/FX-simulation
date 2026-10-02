@@ -1,9 +1,10 @@
 import Decimal from 'decimal.js'
 
-export function formatUsd(amountUsd: string): string {
+export function formatUsd(amountUsd: string, includeCurrency = true): string {
   const [integer = '0', fraction = '00'] = new Decimal(amountUsd)
     .toFixed(2, Decimal.ROUND_HALF_UP).split('.')
-  return `${integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction} USD`
+  const formatted = `${integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}`
+  return includeCurrency ? `${formatted} USD` : formatted
 }
 
 export function formatPrice(price: string): string {
@@ -15,11 +16,11 @@ export function getPnlTone(pnlUsd: string): 'positive' | 'negative' | 'muted' {
   return pnl.isZero() ? 'muted' : pnl.isPositive() ? 'positive' : 'negative'
 }
 
-export function formatPnl(pnlUsd: string): string {
+export function formatPnl(pnlUsd: string, includeCurrency = true): string {
   const pnl = new Decimal(pnlUsd)
   const sign = pnl.isZero() ? '' : pnl.isPositive() ? '+' : '-'
   const label = pnl.isZero() ? '持平' : pnl.isPositive() ? '盈利' : '亏损'
-  return `${label} ${sign}${formatUsd(pnl.abs().toString())}`
+  return `${label} ${sign}${formatUsd(pnl.abs().toString(), includeCurrency)}`
 }
 
 const timestampFormatter = new Intl.DateTimeFormat('zh-CN', {

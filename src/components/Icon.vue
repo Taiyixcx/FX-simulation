@@ -6,7 +6,6 @@ const paths: Record<string, string> = {
   pause: 'M8 5v14M16 5v14',
   step: 'M6 5l10 7-10 7V5ZM19 5v14',
   'chevron-down': 'm6 9 6 6 6-6',
-  'chevron-right': 'm9 6 6 6-6 6',
   plus: 'M12 5v14M5 12h14',
   'arrow-up-right': 'M6 18 18 6M6 6h12v12',
   'arrow-down-right': 'm6 6 12 12M6 18h12V6',

@@ -77,7 +77,7 @@ FX-simulation/
 
 后续 P2 按需要增加历史源、CSV 校验、本机转换脚本、`public/data/` 与模板；P3 增加会话列表、备注、三步引导及完整备份恢复；P4 增加 `start.cmd`。当前没有这些实现。`src/components/` 的图标和信息提示已有跨功能复用；`src/composables/` 仍未预建，功能独用逻辑留在 feature 内。
 
-`priceFormatting.ts` 为账户、报价、持仓和记录共用，无需为一个展示文件预建多层目录。行情源直接放在 `engine/`。用户导入数据未来进入 IndexedDB；公开源码不能自动包含授权未核实的真实行情，来源规则见 [数据与交易](03-data-and-trading.md)。
+`priceFormatting.ts` 为账户、报价、持仓和记录共用；金额与盈亏格式化可选择是否附带币种，组件分开显示 USD 时不再拆改已格式化字符串。行情源直接放在 `engine/`。用户导入数据未来进入 IndexedDB；公开源码不能自动包含授权未核实的真实行情，来源规则见 [数据与交易](03-data-and-trading.md)。
 
 ## 职责与依赖
 
@@ -137,11 +137,13 @@ Vue 操作 ───────► useSessionStore
 
 快照保存可见帧和模拟随机状态，校验时根据版本、配置和种子重建同一前缀；再按记录引用的可见报价重建账户。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针同时保存会话标识和 `revision`；事务内比较读取时的基准，拒绝其他窗口已经更新后的陈旧写入。
 
+数据库打开请求被其他窗口阻塞后报告失败，原数据保留。该请求若在解除阻塞后才成功，其连接立即关闭，避免错误请求留下未受管理的数据库连接；用户仍可重试读取。
+
 ## 数值、时间与图表适配
 
 `decimal.ts` 使用独立 Decimal 构造器隔离精度与舍入设置。持久化快照和 JSON 导出使用普通对象及字符串，不保存 Decimal 实例。完整交易政策只在 [数据与交易](03-data-and-trading.md) 维护。
 
-`MarketChart` 保持 `frames / position / trades / sessionId / chartType` 五项输入，父组件只传已推进前缀。`chartData.ts` 集中将 `timestampMs` 转为类别轴的十进制字符串键，将价格转成绘图所需的普通数值；不再转换为 Lightweight Charts 的秒时间。K 线顺序固定为 `[open, close, low, high]`，绘图值不返回资金计算。图表顶部统一展示当前或十字线所选帧的完整时间，采用 Asia/Shanghai，并注明 UTC+8。
+`MarketChart` 保持 `frames / position / trades / sessionId / chartType` 五项输入，父组件只传已推进前缀。`chartData.ts` 集中将 `timestampMs` 转为类别轴的十进制字符串键，将价格转成绘图所需的普通数值。K 线顺序固定为 `[open, close, low, high]`，绘图值不返回资金计算。图表顶部统一展示当前或十字线所选帧的完整时间，采用 Asia/Shanghai，并注明 UTC+8。
 
 图表实例保存为普通变量，挂载创建，卸载调用 `dispose()` 并移除监听及尺寸观察器。使用 ECharts 的模块化入口和 Canvas 渲染器，仅注册实际使用的折线、K 线、网格、提示、dataZoom、markPoint 和 markLine。行情推进通过同一实例的局部 `setOption` 更新数据；切换图表类型替换 series，不重新创建实例。ECharts 的 `appendData` 不用于折线与 K 线，不将 `setOption` 称作仅追加一个点的 API。
 
