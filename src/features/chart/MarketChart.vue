@@ -243,10 +243,13 @@ function syncChart(): void {
   const isNewSession = renderedSessionId !== props.sessionId
   const isTypeChanged = renderedChartType !== props.chartType
   const firstTimestampMs = props.frames[0]?.quote.timestampMs
+  const removedFrameCount = firstTimestampMs === undefined ? -1 : timestampKeys.indexOf(toTimestampKey(firstTimestampMs))
+  const isRollingWindow = !isNewSession && removedFrameCount > 0
+    && props.frames[renderedFrameCount - removedFrameCount - 1]?.quote.timestampMs === renderedLastTimestampMs
   const isPrefixChanged = firstTimestampMs !== renderedFirstTimestampMs
     || props.frames.length < renderedFrameCount
     || (renderedFrameCount > 0 && props.frames[renderedFrameCount - 1]?.quote.timestampMs !== renderedLastTimestampMs)
-  if (isNewSession || isPrefixChanged) {
+  if (isNewSession || (isPrefixChanged && !isRollingWindow)) {
     timestampKeys = []
     linePoints = []
     candlePoints = []
@@ -254,6 +257,13 @@ function syncChart(): void {
     viewport.value = initialViewport(props.frames.length)
     isFollowingLatest.value = true
     hoveredFrame.value = null
+  } else if (isRollingWindow) {
+    viewport.value = advanceViewport(viewport.value, renderedFrameCount, props.frames.length, isFollowingLatest.value, removedFrameCount)
+    timestampKeys.splice(0, removedFrameCount)
+    linePoints.splice(0, removedFrameCount)
+    candlePoints.splice(0, removedFrameCount)
+    renderedFrameCount -= removedFrameCount
+    if (hoveredFrame.value && hoveredFrame.value.quote.timestampMs < firstTimestampMs!) hoveredFrame.value = null
   } else if (renderedFrameCount !== props.frames.length) {
     viewport.value = advanceViewport(viewport.value, renderedFrameCount, props.frames.length, isFollowingLatest.value)
   }
@@ -406,7 +416,7 @@ onBeforeUnmount(() => {
         <div class="chart-time tabular" data-testid="chart-time">
           <span class="chart-mode">{{ hoveredFrame ? '十字线' : '最新' }}</span>
           {{ detailTime }} <span class="timezone">UTC+8</span>
-          <InfoTip label="图表操作说明">图表只显示已推进的一分钟 Bid 行情。K 线的开、高、低、收分别表示该分钟的开盘价、最高价、最低价和收盘价。移动指针查看时间与价格，滚轮缩放、拖动平移。聚焦图表后，左右方向键平移，+ / − 缩放，End 回到最新。买卖标记位于实际成交价格；虚线表示当前持仓的开仓价。</InfoTip>
+          <InfoTip label="图表操作说明">图表显示最近 1,440 根已推进的一分钟 Bid 行情，较早行情仍保存在本机。K 线的开、高、低、收分别表示该分钟的开盘价、最高价、最低价和收盘价。移动指针查看时间与价格，滚轮缩放、拖动平移。聚焦图表后，左右方向键平移，+ / − 缩放，End 回到最新。买卖标记位于实际成交价格；虚线表示当前持仓的开仓价。</InfoTip>
         </div>
         <div v-if="detailFrame && chartType === 'candlestick'" class="ohlc-readout tabular">
           <span><span class="muted">开</span> {{ formatChartPrice(detailFrame.openPrice) }}</span>
@@ -425,6 +435,10 @@ onBeforeUnmount(() => {
         data-testid="market-chart"
         :data-chart-instance-id="instanceId"
         :data-frame-count="frames.length"
+        :data-first-timestamp="frames[0]?.quote.timestampMs"
+        :data-last-timestamp="frames.at(-1)?.quote.timestampMs"
+        :data-viewport-start-time="frames[viewport.from]?.quote.timestampMs"
+        :data-viewport-end-time="frames[viewport.to]?.quote.timestampMs"
         :data-viewport-from="viewport.from"
         :data-viewport-to="viewport.to"
         :data-price-min="priceRange.minValue"

@@ -2,20 +2,35 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as execution from '../../src/engine/execution'
 import { advanceSimulation } from '../../src/engine/simulationSource'
+import { MAX_SIMULATION_TIMESTAMP_MS } from '../../src/engine/simulationParameters'
 import { useSessionStore } from '../../src/stores/useSessionStore'
+import { SessionLoadError } from '../../src/storage/sessionRepository'
 import type { SessionRepository } from '../../src/storage/sessionRepository'
-import { validateSessionSnapshot } from '../../src/storage/sessionSnapshot'
+import { validateSessionSnapshot, validateSessionTransition, SESSION_FRAME_WINDOW_SIZE } from '../../src/storage/sessionSnapshot'
 import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
 import { extendSession, makeLegacySession, makeSession } from './sessionFixture'
 
 function memoryRepository(initial: unknown | null = null) {
   let saved: unknown | null = initial
+  let verified: SessionSnapshot | null = null
   let rejectNextSave = false
   const repository: SessionRepository = {
-    loadCurrent: vi.fn(async () => structuredClone(saved)),
+    loadCurrent: vi.fn(async () => {
+      if (saved === null) return null
+      if (verified) return structuredClone(verified)
+      try {
+        verified = validateSessionSnapshot(saved)
+        return structuredClone(verified)
+      } catch (error) {
+        throw new SessionLoadError(error instanceof Error ? error.message : '读取失败', structuredClone(saved))
+      }
+    }),
     save: vi.fn(async (snapshot: SessionSnapshot) => {
       if (rejectNextSave) { rejectNextSave = false; throw new Error('QuotaExceededError') }
-      saved = structuredClone(validateSessionSnapshot(snapshot))
+      verified = verified?.id === snapshot.id
+        ? validateSessionTransition(verified, snapshot)
+        : validateSessionSnapshot(snapshot)
+      saved = structuredClone(verified)
     }),
     close: vi.fn(),
   }
@@ -36,6 +51,7 @@ describe('session store', () => {
     await store.initialize()
     expect(store.snapshot?.pair).toBe('EUR/USD')
     expect(store.snapshot?.frames).toHaveLength(1)
+    expect(store.snapshot?.sourceState.maxFrames).toBeNull()
     expect(store.accountMetrics?.balanceUsd).toBe('10000.00')
     expect(store.isPlaying).toBe(false)
     expect(store.isReady).toBe(true)
@@ -214,7 +230,7 @@ describe('session store', () => {
     const memory = memoryRepository(legacy)
     store.setRepositoryForTesting(memory.repository)
     await store.initialize()
-    expect(store.snapshot).toMatchObject({ schemaVersion: 2, frames: legacy.frames, account: legacy.account, trades: legacy.trades })
+    expect(store.snapshot).toMatchObject({ schemaVersion: 3, frameStartIndex: 0, frames: legacy.frames, account: legacy.account, trades: legacy.trades })
     expect(store.snapshot?.sourceState).toMatchObject({ version: 2, originFrameIndex: 4, frameIndex: 3 })
     expect(store.isPlaying).toBe(false)
     expect(store.scenario).toBe('standard')
@@ -326,5 +342,67 @@ describe('session store', () => {
     const expected = extendSession(initial, 10)
     expect(store.snapshot?.sourceState).toEqual(expected.sourceState)
     expect(store.snapshot?.frames).toEqual(expected.frames)
+  })
+
+  it('continues past 1440 frames with a bounded window and restores the same next quote', async () => {
+    vi.useFakeTimers()
+    const initial = extendSession(makeSession('EUR/USD', null), 1438)
+    const memory = memoryRepository(initial)
+    store.setRepositoryForTesting(memory.repository)
+    await store.initialize()
+    store.setSpeed(10)
+    store.play()
+    await vi.advanceTimersByTimeAsync(1000)
+    store.pause()
+    const expected = extendSession(initial, 10)
+    expect(store.progressedFrameCount).toBe(1449)
+    expect(store.snapshot?.frames).toHaveLength(SESSION_FRAME_WINDOW_SIZE)
+    expect(store.snapshot?.frameStartIndex).toBe(9)
+    expect(store.snapshot?.sourceState).toEqual(expected.sourceState)
+    expect(store.isEnded).toBe(false)
+    expect(store.canAdvance).toBe(true)
+    const previous = structuredClone(store.snapshot)!
+    store.dispose()
+    setActivePinia(createPinia())
+    store = useSessionStore()
+    store.setRepositoryForTesting(memory.repository)
+    await store.initialize()
+    expect(store.isPlaying).toBe(false)
+    expect(store.snapshot).toEqual(previous)
+    await store.next()
+    expect(store.currentQuote).toEqual(advanceSimulation(previous.sourceState)!.frame.quote)
+  })
+
+  it('excludes the previous seed when a new practice random draw repeats it', async () => {
+    const memory = memoryRepository(makeSession())
+    store.setRepositoryForTesting(memory.repository)
+    await store.initialize()
+    const previous = store.snapshot!.sourceState.seed
+    vi.spyOn(crypto, 'getRandomValues').mockImplementationOnce((array) => {
+      if (array instanceof Uint32Array) array[0] = previous
+      return array
+    })
+    await store.startNewSession()
+    expect(store.snapshot?.sourceState.seed).not.toBe(previous)
+    expect(store.snapshot?.sourceState.maxFrames).toBeNull()
+    expect(store.progressedFrameCount).toBe(1)
+  })
+
+  it('saves the last supported minute and pauses even when a speed batch exceeds the calendar edge', async () => {
+    vi.useFakeTimers()
+    const initial = makeSession('EUR/USD', null, 'standard', MAX_SIMULATION_TIMESTAMP_MS - 120_000)
+    const memory = memoryRepository(initial)
+    store.setRepositoryForTesting(memory.repository)
+    await store.initialize()
+    store.setSpeed(10)
+    store.play()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.progressedFrameCount).toBe(3)
+    expect(store.currentQuote?.timestampMs).toBe(MAX_SIMULATION_TIMESTAMP_MS)
+    expect(store.saveStatus).toBe('saved')
+    expect(store.isPlaying).toBe(false)
+    expect(store.isCalendarEnded).toBe(true)
+    expect(store.canAdvance).toBe(false)
+    expect(memory.read()).toEqual(store.snapshot)
   })
 })

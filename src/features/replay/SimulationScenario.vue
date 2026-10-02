@@ -25,7 +25,7 @@ function startNewSession() {
           <option value="standard">常规练习</option>
           <option value="eventful">事件练习</option>
         </select>
-        <InfoTip label="练习情景说明">常规练习包含市场波动与偶发事件。事件练习提高模拟公告和突发事件的频率，便于练习应对快速变化；事件不表示下一根必涨或必跌。选择情景后点击“新练习”，旧记录仍保留在本机，新练习使用独立训练资金。</InfoTip>
+        <InfoTip label="练习情景说明">常规练习包含市场波动与偶发事件；事件练习提高公告和突发事件的频率，事件不表示下一根必涨或必跌。新练习默认持续生成，可随时暂停。选择情景后点击“新练习”，会换一条随机走势和独立训练资金，旧记录仍保留在本机；刷新会继续原练习并暂停。</InfoTip>
       </div>
       <button type="button" class="new-session button-quiet" :disabled="!session.canOperate" @click="startNewSession"><Icon name="plus" :size="16" />新练习</button>
   </div>

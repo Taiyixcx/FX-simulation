@@ -43,7 +43,7 @@ FX-simulation/
 │  │  │  ├─ MarketChart.vue     # 图表生命周期、序列与成交标注
 │  │  │  └─ chartData.ts        # UTC 毫秒类别、OHLC、标记与可见范围适配
 │  │  ├─ replay/
-│  │  │  ├─ ReplayControls.vue  # 暂停、单步、调速及不可拖动的进度
+│  │  │  ├─ ReplayControls.vue  # 暂停、单步、调速及累计/有限进度
 │  │  │  ├─ SimulationScenario.vue # 新会话的练习情景选择
 │  │  │  └─ SimulationEventNotice.vue # 已发生事件与公开计划提示
 │  │  ├─ trading/
@@ -62,8 +62,8 @@ FX-simulation/
 │  ├─ stores/
 │  │  └─ useSessionStore.ts     # 当前练习、调度器与保存协调
 │  ├─ storage/
-│  │  ├─ sessionSnapshot.ts     # 纯快照校验与账本重建
-│  │  └─ sessionRepository.ts   # IndexedDB 事务及版本冲突检查
+│  │  ├─ sessionSnapshot.ts     # 快照、增量校验、迁移与账本重建
+│  │  └─ sessionRepository.ts   # 行情分块、IndexedDB 事务及版本冲突
 │  └─ styles/
 │     └─ base.css              # 视觉变量、基础排版与焦点
 ├─ tests/
@@ -93,8 +93,8 @@ FX-simulation/
 | `components/` | 跨功能的图标、信息提示及焦点处理 | 不持有账户或会话状态 |
 | `engine/` | 行情、成交、账户和纯数值校验 | 不依赖 Vue、Pinia、DOM、计时器或浏览器存储 |
 | `useSessionStore.ts` | 逐根推进、交易、切换、保存状态与重试 | 调用引擎和 storage，拥有并清理回放计时器 |
-| `sessionSnapshot.ts` | 校验不可信快照、迁移旧可见前缀、重放当前模拟后缀并重建账本 | 不执行旧模型；复用引擎验证当前生成价格和结算，不另写公式 |
-| `sessionRepository.ts` | 数据库连接、事务、当前索引和并发版本检查 | 事务完成才确认保存；不驱动图表或选择成交价 |
+| `sessionSnapshot.ts` | 校验不可信快照、验证增量与完整分块历史、迁移旧可见前缀并重建账本 | 不执行旧模型；仅可信已验证状态可作为增量基准，不另写账户公式 |
+| `sessionRepository.ts` | 数据库连接、行情分块、原子事务、当前索引和并发版本检查 | 归档、快照与指针提交完成才确认保存；不驱动图表或选择成交价 |
 | `styles/`、`priceFormatting.ts` | 共享基础样式和数值展示 | 展示舍入不回写账本 |
 | `tests/` | 业务、事务与浏览器流程验证 | 不存放业务源码或生成产物 |
 
@@ -126,27 +126,29 @@ Vue 操作 ───────► useSessionStore
 | --- | --- |
 | `MarketQuote` | `timestampMs`、`bidPrice`、`askPrice`、`askSource`；模拟输出来源固定为 `training` |
 | `MarketFrame` | 一根完成的 Bid 分钟 OHLC 与当前 `quote` |
-| `SimulationState` | 模型/参数版本、品种与情景、价格/事件/日程随机状态、起止配置、可见进度与时钟、初始和当前双边报价、波动/流动性/经济背景、最近事件与公开计划事件 |
-| `createSimulation(pair, seed, options)` | 返回首根 `SimulationStep`，`frameIndex = 0`；配置可指定起始完成时间、总根数与情景 |
+| `SimulationState` | 模型/参数版本、品种与情景、价格/事件/日程随机状态、nullable 总根数、全场累计进度与时钟、初始和当前双边报价、市场因子、最近事件、公开计划与已搜索日程游标 |
+| `createSimulation(pair, seed, options)` | 返回首根 `SimulationStep`，`frameIndex = 0`；配置可指定起始完成时间、有限总根数或持续源与情景 |
 | `initializeSimulation(...)`、`createSimulationFromQuote(...)` | 从新练习或旧会话最后双边报价建立当前模型起点；`originFrameIndex` 区分保留前缀与当前生成后缀 |
-| `advanceSimulation(state)` | 返回下一根及新状态；到末尾返回 `null`，不修改旧状态 |
+| `advanceSimulation(state)` | 返回下一根及新状态，不修改旧状态；有限来源到指定末尾返回 `null`，持续源到模拟时钟边界报告错误并暂停 |
 | `SimulationEvent`、`ScheduledSimulationEvent` | 最近已发生事件含时间、类型、标签、详情与标准化惊喜；计划事件仅时间、类型、标签与预期，无实际结果 |
 | `AccountState`、`Position` | 已结算余额、单笔持仓；持仓包含方向、名义金额、数量、成交价和开仓时间 |
 | `calculateAccount(account, quote)` | 从当前可平仓报价派生账户指标 |
 | `openPosition(...)` | 校验输入和可用资金，返回候选账户 |
 | `closePosition(...)` | 返回已结算账户和单笔 `TradeRecord` |
 | `settleDepletedAccount(...)` | 逐根检查权益耗尽，需要结清时返回同一成交结果，否则为 `null` |
-| `SessionSnapshot` | `schemaVersion`、`id`、`revision`、品种、模拟状态、仅可见帧、账户及成交 |
-| `validateSessionSnapshot(input)` | 校验版本与关联、按当前模型重放后缀及完整账本；旧格式校验已有可见行情后迁移为当前格式 |
-| `SessionRepository` | `loadCurrent()`、`save(snapshot)`、`close()`；当前快照与索引在同一事务提交 |
+| `SessionSnapshot` | 当前格式版本、`id`、`revision`、品种、完整模拟状态、保留历史类别、`frameStartIndex` 与最近 `frames`、账户及完整成交 |
+| 快照与历史校验 | 旧格式校验已有行情与账本后内存迁移；加载分块验证完整历史；保存以可信基准验证增量，拒绝陈旧或篡改数据 |
+| `SessionRepository` | `loadCurrent()`、`save(snapshot)`、`close()`；行情归档、当前快照及索引在同一事务提交 |
 
 `MarketSource` 通用接口、历史源、数据集元信息和 CSV API 仍为 P2 设计项。当前模拟源的纯函数与统一帧类型满足 P1，无需提前包装尚无实际复用的来源层。
 
-快照保存可见帧、当前模型全部随机和隐含状态。新会话按模型、参数、配置和种子重建已推进序列；旧格式保留已有行情与账本，校验报价、时间、OHLC、进度和成交关联后，从最后双边报价初始化当前模型，之后仅重放新生成后缀。不保留旧生成算法，也不再通过旧算法重算旧可见前缀；这种迁移校验不是旧行情来源真实性或防篡改证明。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针同时保存会话标识和 `revision`；事务内比较读取时的基准，拒绝其他窗口已经更新后的陈旧写入。
+当前头快照保存最近行情窗口、全场位置、账户与完整成交，以及当前模型全部随机和隐含状态；较早行情保存在 IndexedDB 的 `historyChunks`，按 `[sessionId, chunkIndex]` 定位。格式版本、分块与窗口容量统一见 [保存规则](03-data-and-trading.md#6-会话保存与恢复)。加载按块验证整个已经发生的历史和账本，最终只保留最近行情窗口；成交展示分页，不通过截断账本限制显示。
 
-快照校验器使用一个私有的确定性计算缓存，按品种和完整模拟配置区分，只保留引擎自己生成的最多 1,440 个步骤；配置变化时替换，超过上限的步骤仍计算但不缓存。每次校验仍逐帧核对全部输入历史、最终模拟状态和完整账本，返回状态与缓存隔离。缓存不保存到数据库，也不供页面读取，用于避免每秒保存时重复生成全部合成子步。
+日常保存从私有可信验证检查点核对追加行情、源状态和交易变化，基准必须对应同一会话、版本及完整源配置；缓存和验证结果与调用者对象隔离，不能绕过未验证输入的核对。归档块、头快照、账本和当前指针作为一致事务提交，失败保留原块及未保存候选。缓存不进入持久化快照，也不供页面读取，用于避免长练习每次保存都重放全部合成子步。
 
-普通行情、事件结果和计划日程使用独立可保存的随机流，帮助文字及绘图不消耗随机数。情景通过 `startNewSession(pair?, scenario?)` 创建新会话确定；修改选择框不改变当前源。公开事件信息由纯引擎状态提供，页面不会读取未来价格或计划事件结果。具体科学机制、参数与闭市规则见 [数据与交易](03-data-and-trading.md#模拟行情)，研究限制见 [外汇模拟研究](../knowledge/05-foreign-exchange-simulation.md)。
+旧格式经报价、时间、OHLC、进度和完整账本校验后，从最后双边报价初始化当前持续模型。读取时只作内存迁移，第一次后续保存才原子写入保留旧行情的块、头快照与指针；成功前保留原记录。`retainedPrefixKind` 标记旧保留段：版本 1 继续核对固定分钟时序、点差和相邻开收盘约束，版本 2 核对价格结构、锚点和账本；当前生成后缀逐根重演并比较完整状态。不保留或执行旧生成算法，旧保留段的结构和账本校验不构成旧行情来源真实性或防篡改证明。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针仍包含会话标识和 `revision`，事务内拒绝其他窗口已经更新后的陈旧写入。
+
+普通行情、事件结果和计划日程使用独立可保存的随机流，帮助文字及绘图不消耗随机数。日程以已判定游标逐段向前搜索有限窗口，未入选候选不反复抽签，不预扫描持续源的全部可用日期。情景通过 `startNewSession(pair?, scenario?)` 创建新会话确定；新会话种子排除上一场，修改选择框不改变当前源，刷新继续原种子与完整状态。公开事件信息由纯引擎状态提供，页面不会读取未来价格或计划事件结果。具体科学机制、参数与闭市规则见 [数据与交易](03-data-and-trading.md#模拟行情)，研究限制见 [外汇模拟研究](../knowledge/05-foreign-exchange-simulation.md)。
 
 数据库打开请求被其他窗口阻塞后报告失败，原数据保留。该请求若在解除阻塞后才成功，其连接立即关闭，避免错误请求留下未受管理的数据库连接；用户仍可重试读取。
 
@@ -154,7 +156,7 @@ Vue 操作 ───────► useSessionStore
 
 `decimal.ts` 使用独立 Decimal 构造器隔离精度与舍入设置。持久化快照和 JSON 导出使用普通对象及字符串，不保存 Decimal 实例。完整交易政策只在 [数据与交易](03-data-and-trading.md) 维护。
 
-`MarketChart` 保持 `frames / position / trades / sessionId / chartType` 五项输入，父组件只传已推进前缀。`chartData.ts` 集中将 `timestampMs` 转为类别轴的十进制字符串键，将价格转成绘图所需的普通数值。K 线顺序固定为 `[open, close, low, high]`，绘图值不返回资金计算。图表顶部统一展示当前或十字线所选帧的完整时间，采用 Asia/Shanghai，并注明 UTC+8。
+`MarketChart` 保持 `frames / position / trades / sessionId / chartType` 五项输入，父组件只传已经完成的最近窗口。窗口滑动按时间戳识别位置变化，不把窗口内索引当全场累计进度；仍在窗口内的观察时间范围保持稳定，早于显示窗口的观察范围贴近最早剩余时间，较早行情仍在本机归档但暂无图表加载入口。`chartData.ts` 集中将 `timestampMs` 转为类别轴的十进制字符串键，将价格转成绘图所需的普通数值。K 线顺序固定为 `[open, close, low, high]`，绘图值不返回资金计算。图表顶部统一展示当前或十字线所选帧的完整时间，采用 Asia/Shanghai，并注明 UTC+8。
 
 图表实例保存为普通变量，挂载创建，卸载调用 `dispose()` 并移除监听及尺寸观察器。使用 ECharts 的模块化入口和 Canvas 渲染器，仅注册实际使用的折线、K 线、网格、提示、dataZoom、markPoint 和 markLine。行情推进通过同一实例的局部 `setOption` 更新数据；切换图表类型替换 series，不重新创建实例。ECharts 的 `appendData` 不用于折线与 K 线，不将 `setOption` 称作仅追加一个点的 API。
 

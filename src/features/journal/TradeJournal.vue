@@ -1,17 +1,25 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useSessionStore } from '../../stores/useSessionStore'
 import { formatUsd, formatPrice, formatPnl, getPnlTone, formatTimestamp } from '../../priceFormatting'
 import Icon from '../../components/Icon.vue'
 
 const session = useSessionStore()
-const trades = computed(() => [...(session.snapshot?.trades ?? [])].reverse())
+const currentPage = ref(1)
+const PAGE_SIZE = 20
+const tradeCount = computed(() => session.snapshot?.trades.length ?? 0)
+const pageCount = computed(() => Math.max(1, Math.ceil(tradeCount.value / PAGE_SIZE)))
+const trades = computed(() => {
+  const endIndex = tradeCount.value - (currentPage.value - 1) * PAGE_SIZE
+  return (session.snapshot?.trades ?? []).slice(Math.max(0, endIndex - PAGE_SIZE), endIndex).reverse()
+})
+watch([() => session.snapshot?.id, tradeCount], () => { currentPage.value = 1 })
 </script>
 
 <template>
   <section id="trade-journal" class="trade-journal" aria-labelledby="journal-title" tabindex="-1">
     <div class="journal-heading">
-      <div class="journal-title"><h2 id="journal-title">成交记录</h2><span class="trade-count number">{{ trades.length }}</span></div>
+      <div class="journal-title"><h2 id="journal-title">成交记录</h2><span class="trade-count number">{{ tradeCount }}</span></div>
       <span class="section-label">本次练习 · 已平仓</span>
     </div>
     <div v-if="!trades.length" class="empty-journal">
@@ -44,12 +52,19 @@ const trades = computed(() => [...(session.snapshot?.trades ?? [])].reverse())
           <dl class="trade-details number"><div><dt>开仓价</dt><dd>{{ formatPrice(trade.entryPrice) }}</dd></div><div><dt>平仓价</dt><dd>{{ formatPrice(trade.exitPrice) }}</dd></div><div><dt>开仓时间</dt><dd>{{ formatTimestamp(trade.openedAtMs) }}</dd></div><div><dt>平仓时间</dt><dd>{{ formatTimestamp(trade.closedAtMs) }}</dd></div><div><dt>平仓原因</dt><dd>{{ trade.reason === 'manual' ? '手动平仓' : '权益耗尽' }}</dd></div></dl>
         </details>
       </div>
+      <nav v-if="pageCount > 1" class="journal-pagination" aria-label="成交记录分页">
+        <button type="button" class="button-outline" :disabled="currentPage === 1" @click="currentPage -= 1">上一页</button>
+        <span class="number" role="status">第 {{ currentPage }} / {{ pageCount }} 页</span>
+        <button type="button" class="button-outline" :disabled="currentPage === pageCount" @click="currentPage += 1">下一页</button>
+      </nav>
     </template>
   </section>
 </template>
 
 <style scoped>
 .trade-journal { padding: 24px 28px 28px; border-top: 1px solid var(--line); min-width: 0; scroll-margin-top: 24px; }
+.journal-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; color: var(--muted); font-size: .875rem; }
+.journal-pagination button { min-height: 44px; }
 .journal-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 .journal-title { display: flex; align-items: center; gap: 8px; }
 .trade-count { display: inline-grid; place-items: center; min-width: 24px; min-height: 24px; padding: 0 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); color: var(--muted); font-size: .75rem; font-weight: 500; }

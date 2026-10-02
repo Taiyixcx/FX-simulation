@@ -6,7 +6,7 @@ import {
 } from '../../src/engine/simulationSource'
 import {
   getLondonOffsetMinutes, getNewYorkOffsetMinutes, getSimulationSeasonality,
-  isSimulationMarketOpen, nextSimulationTimestamp,
+  isSimulationMarketOpen, MAX_SIMULATION_TIMESTAMP_MS, nextSimulationTimestamp,
 } from '../../src/engine/simulationParameters'
 import type { CurrencyPair, SimulationState } from '../../src/engine/types'
 
@@ -86,6 +86,51 @@ describe('version-2 completed-minute simulation', () => {
     expect(advanceSimulation(step.state)).toBeNull()
   })
 
+  it('continues past 1440 with the same source and exactly resumes after persistence', () => {
+    const options = { maxFrames: null, scenario: 'eventful' as const }
+    const initial = initializeSimulation('EUR/USD', 23, options)
+    expect(initial.maxFrames).toBeNull()
+    let state = initial
+    for (let index = 0; index < 1440; index += 1) state = advanceSimulation(state)!.state
+    const saved = restoreState(state)
+    const next = advanceSimulation(saved)!
+    expect(next).toEqual(advanceSimulation(state))
+    expect(next.state).toMatchObject({ maxFrames: null, frameIndex: 1440, originFrameIndex: 0,
+      initialTimestampMs: initial.initialTimestampMs, initialBidPrice: initial.initialBidPrice, seed: 23 })
+    expect(next.state.randomState).not.toBe(initial.randomState)
+    let restored = saved
+    for (let index = 1440; index < 3000; index += 1) {
+      const uninterrupted = advanceSimulation(state)!
+      const resumed = advanceSimulation(restored)!
+      expect(resumed).toEqual(uninterrupted)
+      state = uninterrupted.state
+      restored = resumed.state
+    }
+    expect(state.frameIndex).toBe(2999)
+    expect(advanceSimulation(state)).not.toBeNull()
+  })
+
+  it('bounds continuous calendar search even when no release is selected, without resampling rejected candidates', () => {
+    let state = initializeSimulation('EUR/USD', 1396, { maxFrames: null })
+    expect(state.upcomingScheduledEvent).toBeNull()
+    expect(state.scheduledSearchThroughTimestampMs - state.currentTimestampMs).toBe(14 * 86_400_000)
+    const scheduleRandomState = state.scheduleRandomState
+    for (let index = 0; index < 60; index += 1) {
+      state = advanceSimulation(restoreState(state))!.state
+      expect(state.scheduleRandomState).toBe(scheduleRandomState)
+      expect(state.scheduledSearchThroughTimestampMs - state.currentTimestampMs).toBeLessThanOrEqual(14 * 86_400_000)
+    }
+    expect(state.upcomingScheduledEvent).toBeNull()
+  })
+
+  it('stops continuous generation at the supported date boundary without modifying the last saved state', () => {
+    const step = createSimulation('EUR/USD', 7, { maxFrames: null, startTimestampMs: MAX_SIMULATION_TIMESTAMP_MS })
+    expect(step.frame.quote.timestampMs).toBe(MAX_SIMULATION_TIMESTAMP_MS)
+    const before = restoreState(step.state)
+    expect(() => advanceSimulation(step.state)).toThrow('2099 年模拟日期边界')
+    expect(step.state).toEqual(before)
+  })
+
   it('supports a single-frame session and seed zero without a stuck RNG', () => {
     const step = createSimulation('EUR/USD', 0, { maxFrames: 1 })
     expect(step.state.seed).toBe(0)
@@ -131,6 +176,17 @@ describe('version-2 completed-minute simulation', () => {
       expect(after.state.liquidityPressure).toBeLessThan(release.state.liquidityPressure)
     }
     expect(state).toEqual(before)
+  })
+
+  it('includes a release at the initial minute boundary without exposing its result early', () => {
+    const initial = initializeSimulation('EUR/USD', 7, {
+      maxFrames: null, scenario: 'eventful', startTimestampMs: Date.UTC(2024, 2, 4, 8, 1),
+    })
+    expect(initial.upcomingScheduledEvent?.timestampMs).toBe(initial.currentTimestampMs)
+    expect(initial.lastEvent).toBeNull()
+    const released = advanceSimulation(initial)!
+    expect(released.state.lastEvent?.occurredAtMs).toBe(initial.currentTimestampMs)
+    expect(released.frame.quote.timestampMs).toBe(initial.currentTimestampMs + 60_000)
   })
 
   it('does not mutate nested saved event metadata or factors while advancing', () => {
@@ -189,6 +245,7 @@ describe('version-2 completed-minute simulation', () => {
     { liquidityPressure: -1 }, { eventVariance: Infinity },
     { temporaryDislocationLog: 1 }, { economicContext: 2 }, { policySensitivity: 0 },
     { initialTimestampMs: undefined }, { currentTimestampMs: undefined },
+    { scheduledSearchThroughTimestampMs: undefined }, { scheduledSearchThroughTimestampMs: Infinity },
     { lastEvent: undefined }, { upcomingScheduledEvent: undefined },
   ])('rejects invalid persisted fields %o', (invalidFields) => {
     const state = createSimulation('EUR/USD').state

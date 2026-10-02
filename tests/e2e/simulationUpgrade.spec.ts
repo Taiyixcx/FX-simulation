@@ -1,52 +1,8 @@
 import { expect, test } from '@playwright/test'
-import type { Page } from '@playwright/test'
+import { closePosition, openPosition } from '../../src/engine/execution'
 import { advanceSimulation } from '../../src/engine/simulationSource'
-import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
 import { extendSession, makeLegacySession, makeSession } from '../unit/sessionFixture'
-
-async function waitSaved(page: Page) {
-  await expect(page.getByTestId('save-status')).toHaveText('已保存到本机')
-}
-
-async function writeSnapshot(page: Page, savedSnapshot: { id: string; revision: number }) {
-  await page.evaluate(async (snapshot) => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 1)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const transaction = database.transaction(['settings', 'sessions'], 'readwrite')
-        transaction.objectStore('sessions').put(snapshot)
-        transaction.objectStore('settings').put({ id: snapshot.id, revision: snapshot.revision }, 'current')
-        transaction.oncomplete = () => resolve()
-        transaction.onabort = () => reject(transaction.error)
-      })
-    } finally { database.close() }
-  }, savedSnapshot)
-}
-
-async function readSnapshot(page: Page): Promise<SessionSnapshot> {
-  return page.evaluate(async () => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 1)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    try {
-      return await new Promise<SessionSnapshot>((resolve, reject) => {
-        const transaction = database.transaction(['settings', 'sessions'], 'readonly')
-        const pointer = transaction.objectStore('settings').get('current')
-        pointer.onsuccess = () => {
-          const request = transaction.objectStore('sessions').get((pointer.result as { id: string }).id)
-          request.onsuccess = () => resolve(request.result as SessionSnapshot)
-        }
-        transaction.onabort = () => reject(transaction.error)
-      })
-    } finally { database.close() }
-  })
-}
+import { readHistoryChunks, readSnapshot, waitSaved, writeSnapshot } from './sessionDatabase'
 
 test('切换练习情景需创建独立会话，刷新后情景保持且暂停', async ({ page }) => {
   await page.goto('/')
@@ -54,6 +10,8 @@ test('切换练习情景需创建独立会话，刷新后情景保持且暂停',
   const original = await readSnapshot(page)
   expect(original.sourceState.version).toBe(2)
   expect(original.sourceState.scenario).toBe('standard')
+  expect(original.schemaVersion).toBe(3)
+  expect(original.sourceState.maxFrames).toBeNull()
   await page.getByLabel('新练习情景').selectOption('eventful')
   expect(await readSnapshot(page)).toEqual(original)
   await page.getByRole('button', { name: '新练习', exact: true }).focus()
@@ -61,38 +19,52 @@ test('切换练习情景需创建独立会话，刷新后情景保持且暂停',
   await waitSaved(page)
   const eventful = await readSnapshot(page)
   expect(eventful.id).not.toBe(original.id)
+  expect(eventful.sourceState.seed).not.toBe(original.sourceState.seed)
   expect(eventful.sourceState.scenario).toBe('eventful')
+  expect(eventful.sourceState.maxFrames).toBeNull()
+  expect(eventful.sourceState.frameIndex).toBe(0)
   expect(eventful.account).toEqual({ balanceUsd: '10000', position: null })
+  expect(await readSnapshot(page, original.id)).toEqual(original)
+  expect((await readHistoryChunks(page, original.id)).flatMap(chunk => chunk.frames)).toEqual(original.frames)
   await page.reload()
   await waitSaved(page)
   await expect(page.getByLabel('新练习情景')).toHaveValue('eventful')
   await expect(page.getByTestId('progress')).toContainText('已暂停')
+  expect(await readSnapshot(page)).toEqual(eventful)
   await page.getByLabel('货币对').selectOption('GBP/USD')
   await waitSaved(page)
   const switched = await readSnapshot(page)
   expect(switched.sourceState.scenario).toBe('eventful')
   expect(switched.id).not.toBe(eventful.id)
+  expect(switched.sourceState.seed).not.toBe(eventful.sourceState.seed)
+  expect(await readSnapshot(page, eventful.id)).toEqual(eventful)
 })
 
 test('模拟事件与完成报价同时出现、保存和恢复，不提前公布结果', async ({ page }) => {
-  let before = makeSession('EUR/USD', 1440, 'eventful')
+  let before = makeSession('EUR/USD', null, 'eventful')
+  const history = [...before.frames]
   let after = extendSession(before)
   while (!after.sourceState.lastEvent) {
+    history.push(after.frames.at(-1)!)
     before = after
     after = extendSession(before)
   }
   expect(before.sourceState.lastEvent).toBeNull()
   await page.goto('/')
   await waitSaved(page)
-  await writeSnapshot(page, before)
+  await writeSnapshot(page, before, history)
   await page.reload()
   await waitSaved(page)
   await expect(page.getByTestId('simulation-event')).toHaveCount(0)
+  if (before.sourceState.upcomingScheduledEvent) {
+    await expect(page.getByTestId('scheduled-event')).toContainText(before.sourceState.upcomingScheduledEvent.label)
+  }
   await page.getByRole('button', { name: '下一根', exact: true }).click()
   await waitSaved(page)
   const occurred = await readSnapshot(page)
   expect(occurred.sourceState).toEqual(after.sourceState)
   expect(occurred.frames.at(-1)).toEqual(after.frames.at(-1))
+  expect((await readHistoryChunks(page, occurred.id)).flatMap(chunk => chunk.frames)).toEqual([...history, after.frames.at(-1)!])
   await expect(page.getByTestId('simulation-event')).toContainText(after.sourceState.lastEvent!.label)
   await page.screenshot({ path: 'test-results/simulation-event.png', fullPage: true })
   await page.reload()
@@ -112,21 +84,72 @@ test('既有练习保存历史和账本，从最后报价衔接新模型并暂�
   await writeSnapshot(page, legacy)
   await page.reload()
   await waitSaved(page)
-  await expect(page.getByTestId('progress')).toContainText(`${legacy.frames.length} / ${legacy.sourceState.maxFrames} 根 · 已暂停`)
+  await expect(page.getByTestId('progress')).toContainText(`已推进 ${legacy.frames.length} 根 · 已暂停`)
+  expect(await readSnapshot<typeof legacy>(page)).toEqual(legacy)
+  expect(await readHistoryChunks(page, legacy.id)).toEqual([])
   await expect(page.getByRole('button', { name: '平仓', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: '下一根', exact: true }).click()
   await waitSaved(page)
   const upgraded = await readSnapshot(page)
-  expect(upgraded.schemaVersion).toBe(2)
+  expect(upgraded.schemaVersion).toBe(3)
   expect(upgraded.sourceState.version).toBe(2)
+  expect(upgraded.sourceState.maxFrames).toBeNull()
   expect(upgraded.sourceState.originFrameIndex).toBe(legacy.frames.length)
   expect(upgraded.frames.slice(0, legacy.frames.length)).toEqual(legacy.frames)
   expect(upgraded.account).toEqual(legacy.account)
   expect(upgraded.trades).toEqual(legacy.trades)
+  expect((await readHistoryChunks(page, upgraded.id)).flatMap(chunk => chunk.frames)).toEqual(upgraded.frames)
   await page.reload()
   await waitSaved(page)
   expect(await readSnapshot(page)).toEqual(upgraded)
   await page.getByRole('button', { name: '下一根', exact: true }).click()
   await waitSaved(page)
   expect((await readSnapshot(page)).frames.at(-1)).toEqual(advanceSimulation(upgraded.sourceState)!.frame)
+})
+
+test('早期V2固定练习先在内存迁移，首次推进保留原行情账本并切为持续练习', async ({ page }) => {
+  let fixture = makeSession('GBP/USD', 1440, 'eventful')
+  fixture.account = openPosition(fixture.account, fixture.frames[0]!.quote, fixture.pair, 'long', '500', 'early-v2-closed')
+  fixture = extendSession(fixture, 3)
+  const closed = closePosition(fixture.account, fixture.frames.at(-1)!.quote)
+  fixture.account = closed.account
+  fixture.trades = [closed.trade]
+  fixture = extendSession(fixture, 200)
+  fixture.account = openPosition(fixture.account, fixture.frames.at(-1)!.quote, fixture.pair, 'short', '500', 'early-v2-open')
+  const legacy = {
+    schemaVersion: 2,
+    id: 'early-v2-session', revision: fixture.revision, pair: fixture.pair,
+    simulationConfig: fixture.simulationConfig,
+    sourceState: Object.fromEntries(Object.entries(fixture.sourceState).filter(([key]) => key !== 'scheduledSearchThroughTimestampMs')),
+    frames: fixture.frames, account: fixture.account, trades: fixture.trades,
+  }
+  await page.goto('/')
+  await waitSaved(page)
+  await writeSnapshot(page, legacy)
+  await page.reload()
+  await waitSaved(page)
+  await expect(page.getByTestId('progress')).toContainText(`已推进 ${legacy.frames.length} 根 · 已暂停`)
+  await expect(page.getByRole('button', { name: '平仓', exact: true })).toBeEnabled()
+  expect(await readSnapshot<typeof legacy>(page)).toEqual(legacy)
+  expect(await readHistoryChunks(page, legacy.id)).toEqual([])
+  await page.getByRole('button', { name: '下一根', exact: true }).click()
+  await waitSaved(page)
+  const migrated = await readSnapshot(page)
+  expect(migrated.schemaVersion).toBe(3)
+  expect(migrated.sourceState.maxFrames).toBeNull()
+  expect(migrated.sourceState.originFrameIndex).toBe(legacy.frames.length)
+  expect(migrated.sourceState.scenario).toBe('eventful')
+  expect(migrated.frames.slice(0, legacy.frames.length)).toEqual(legacy.frames)
+  expect(migrated.account).toEqual(legacy.account)
+  expect(migrated.trades).toEqual(legacy.trades)
+  expect((await readHistoryChunks(page, migrated.id)).flatMap(chunk => chunk.frames)).toEqual(migrated.frames)
+  await page.reload()
+  await waitSaved(page)
+  expect(await readSnapshot(page)).toEqual(migrated)
+  const expectedNext = advanceSimulation(migrated.sourceState)!
+  await page.getByRole('button', { name: '下一根', exact: true }).click()
+  await waitSaved(page)
+  const continued = await readSnapshot(page)
+  expect(continued.sourceState).toEqual(expectedNext.state)
+  expect(continued.frames.at(-1)).toEqual(expectedNext.frame)
 })

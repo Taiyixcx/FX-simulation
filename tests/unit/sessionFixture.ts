@@ -1,17 +1,19 @@
 import { advanceSimulation, createSimulation } from '../../src/engine/simulationSource'
 import type { AccountState, CurrencyPair, MarketFrame, SimulationScenario, TradeRecord } from '../../src/engine/types'
 import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
-import { createSimulationConfig } from '../../src/storage/sessionSnapshot'
+import { createSimulationConfig, SESSION_FRAME_WINDOW_SIZE } from '../../src/storage/sessionSnapshot'
 
-export function makeSession(pair: CurrencyPair = 'EUR/USD', maxFrames = 30, scenario: SimulationScenario = 'standard', startTimestampMs?: number): SessionSnapshot {
+export function makeSession(pair: CurrencyPair = 'EUR/USD', maxFrames: number | null = 30, scenario: SimulationScenario = 'standard', startTimestampMs?: number): SessionSnapshot {
   const simulation = createSimulation(pair, 7654321, { maxFrames, scenario, startTimestampMs })
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: 'session-test',
     revision: 0,
     pair,
     simulationConfig: createSimulationConfig(simulation.state),
+    retainedPrefixKind: null,
     sourceState: simulation.state,
+    frameStartIndex: 0,
     frames: [simulation.frame],
     account: { balanceUsd: '10000.00', position: null },
     trades: [],
@@ -27,7 +29,8 @@ export function extendSession(snapshot: SessionSnapshot, count = 1): SessionSnap
     state = next.state
     frames.push(next.frame)
   }
-  return { ...snapshot, revision: snapshot.revision + 1, sourceState: state, frames }
+  const recent = frames.slice(-SESSION_FRAME_WINDOW_SIZE)
+  return { ...snapshot, revision: snapshot.revision + 1, sourceState: state, frameStartIndex: state.frameIndex + 1 - recent.length, frames: recent }
 }
 
 /** A fixed saved version-1 practice; no obsolete generator is retained in tests. */

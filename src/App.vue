@@ -122,8 +122,9 @@ onBeforeUnmount(() => {
           <SimulationEventNotice />
           <MarketChart :frames="session.snapshot.frames" :position="session.snapshot.account.position" :trades="session.snapshot.trades" :session-id="session.snapshot.id" :chart-type="chartType" />
           <ReplayControls />
+          <p v-if="session.snapshot.frameStartIndex > 0" class="frame-window-note">图表显示最近 {{ session.snapshot.frames.length.toLocaleString('zh-CN') }} 根，较早行情仍保存在本机。</p>
           <a class="trade-jump" href="#trade-amount" @click.prevent="focusTrade">{{ session.snapshot.account.position ? '查看持仓与平仓' : '去下单' }}<Icon name="arrow-right" :size="16" /></a>
-          <p v-if="session.isEnded" class="end-message" role="status"><Icon name="check" :size="16" />本轮行情已结束，仍可按最后报价平仓。</p>
+          <p v-if="session.isEnded" class="end-message" role="status"><Icon name="check" :size="16" />{{ session.isCalendarEnded ? '已达到模拟时钟支持范围' : '本轮行情已结束' }}，仍可按最后报价平仓。</p>
         </section>
         <TradePanel @request-recovery-focus="focusRecovery" />
       </div>
@@ -134,6 +135,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .workspace { max-width: 1520px; margin: 24px auto; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; container: workspace / inline-size; }
+.frame-window-note { margin: 8px 0 0; color: var(--muted); font-size: .8125rem; line-height: 1.6; }
 .workspace-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding: 16px 28px; min-height: 72px; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; color: #fff; background: var(--text); }

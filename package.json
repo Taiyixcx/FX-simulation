@@ -12,6 +12,7 @@
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "check:simulation": "node scripts/checkSimulation.mjs",
+    "check:continuous": "node scripts/checkContinuousSimulation.mjs",
     "test:e2e": "playwright test",
     "build": "vue-tsc --noEmit && vite build"
   },

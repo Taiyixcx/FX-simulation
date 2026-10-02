@@ -6,7 +6,8 @@ import {
   isSimulationMarketOpen, lastSimulationTimestamp, MAX_SIMULATION_TIMESTAMP_MS,
   MIN_SIMULATION_TIMESTAMP_MS, nextSimulationTimestamp, SIMULATION_DAY_MS,
   SIMULATION_MINUTE_MS, SIMULATION_PAIR_PARAMETERS, SIMULATION_PARAMETER_VERSION,
-  SIMULATION_SCENARIO_PARAMETERS, SIMULATION_SUBSTEPS, SIMULATION_VOLATILITY,
+  SIMULATION_SCENARIO_PARAMETERS, SIMULATION_SCHEDULE_LOOKAHEAD_DAYS,
+  SIMULATION_SUBSTEPS, SIMULATION_VOLATILITY,
 } from './simulationParameters'
 import type {
   CurrencyPair, MarketFrame, ScheduledSimulationEvent, SimulationEvent,
@@ -20,7 +21,7 @@ export const DEFAULT_SIMULATION_MAX_FRAMES = 1440
 
 export interface SimulationOptions {
   startTimestampMs?: number
-  maxFrames?: number
+  maxFrames?: number | null
   scenario?: SimulationScenario
   originFrameIndex?: number
   initialBidPrice?: string
@@ -94,10 +95,12 @@ export function validateSimulationState(state: SimulationState): void {
   validateCurrencyPair(state.pair)
   if (!['standard', 'eventful'].includes(state.scenario) || !isUint32(state.seed)
     || ![state.randomState, state.eventRandomState, state.scheduleRandomState].every((randomState) => isUint32(randomState) && randomState !== 0)
-    || !Number.isSafeInteger(state.maxFrames) || state.maxFrames < 1
-    || state.maxFrames > (MAX_SIMULATION_TIMESTAMP_MS - MIN_SIMULATION_TIMESTAMP_MS) / SIMULATION_MINUTE_MS + 1
-    || !Number.isSafeInteger(state.originFrameIndex) || state.originFrameIndex < 0 || state.originFrameIndex > state.maxFrames
-    || !Number.isSafeInteger(state.frameIndex) || state.frameIndex < state.originFrameIndex - 1 || state.frameIndex >= state.maxFrames
+    || (state.maxFrames !== null && (!Number.isSafeInteger(state.maxFrames) || state.maxFrames < 1
+      || state.maxFrames > (MAX_SIMULATION_TIMESTAMP_MS - MIN_SIMULATION_TIMESTAMP_MS) / SIMULATION_MINUTE_MS + 1))
+    || !Number.isSafeInteger(state.originFrameIndex) || state.originFrameIndex < 0
+    || (state.maxFrames !== null && state.originFrameIndex > state.maxFrames)
+    || !Number.isSafeInteger(state.frameIndex) || state.frameIndex < state.originFrameIndex - 1
+    || (state.maxFrames !== null && state.frameIndex >= state.maxFrames)
     || !isFiniteInRange(state.slowLogVariance, -12, 12) || !isFiniteInRange(state.fastLogVariance, -12, 12)
     || !isFiniteInRange(state.liquidityPressure, 0, 20) || !isFiniteInRange(state.eventVariance, 0, 0.01)
     || !isFiniteInRange(state.temporaryDislocationLog, -0.2, 0.2)
@@ -107,6 +110,13 @@ export function validateSimulationState(state: SimulationState): void {
   validateModelTimestamp(state.startTimestampMs)
   validateModelTimestamp(state.initialTimestampMs)
   validateModelTimestamp(state.currentTimestampMs)
+  validateTimestamp(state.scheduledSearchThroughTimestampMs, 'invalid-simulation')
+  if (state.scheduledSearchThroughTimestampMs % SIMULATION_MINUTE_MS !== 0
+    || state.scheduledSearchThroughTimestampMs < state.initialTimestampMs - SIMULATION_MINUTE_MS
+    || state.scheduledSearchThroughTimestampMs > Math.min(MAX_SIMULATION_TIMESTAMP_MS, state.currentTimestampMs + SIMULATION_SCHEDULE_LOOKAHEAD_DAYS * SIMULATION_DAY_MS)
+    || (state.upcomingScheduledEvent !== null && state.upcomingScheduledEvent?.timestampMs > state.scheduledSearchThroughTimestampMs)) {
+    fail('模拟发布日程的扫描进度无效。')
+  }
   if (state.startTimestampMs < MIN_SIMULATION_TIMESTAMP_MS || state.initialTimestampMs < state.startTimestampMs - SIMULATION_MINUTE_MS
     || state.currentTimestampMs < state.initialTimestampMs
     || (state.frameIndex === state.originFrameIndex - 1 && state.currentTimestampMs !== state.initialTimestampMs)
@@ -160,17 +170,30 @@ function scheduledCandidates(utcDayMs: number): Array<ScheduledSimulationEvent &
   ]
 }
 
-function selectNextScheduledEvent(state: SimulationState, lastTimestampMs: number): void {
-  if (state.frameIndex >= state.maxFrames - 1) {
+function selectNextScheduledEvent(state: SimulationState): void {
+  if (state.maxFrames !== null && state.frameIndex >= state.maxFrames - 1) {
     state.upcomingScheduledEvent = null
     return
   }
+  if (state.upcomingScheduledEvent !== null) return
+  let searchEndMs = Math.min(MAX_SIMULATION_TIMESTAMP_MS - SIMULATION_MINUTE_MS,
+    state.currentTimestampMs + SIMULATION_SCHEDULE_LOOKAHEAD_DAYS * SIMULATION_DAY_MS)
+  if (state.maxFrames !== null) {
+    const remainingFrames = state.maxFrames - 1 - state.frameIndex
+    // A larger finite limit cannot end within the bounded calendar search window.
+    if (remainingFrames <= SIMULATION_SCHEDULE_LOOKAHEAD_DAYS * 1440) {
+      searchEndMs = Math.min(searchEndMs, lastSimulationTimestamp(state.currentTimestampMs, remainingFrames) - SIMULATION_MINUTE_MS)
+    }
+  }
+  if (state.scheduledSearchThroughTimestampMs >= searchEndMs) return
   const random = new RandomStream(state.scheduleRandomState)
   const parameters = SIMULATION_SCENARIO_PARAMETERS[state.scenario]
   let nextEvent: ScheduledSimulationEvent | null = null
-  for (let utcDayMs = Math.floor(state.currentTimestampMs / SIMULATION_DAY_MS) * SIMULATION_DAY_MS; utcDayMs <= lastTimestampMs; utcDayMs += SIMULATION_DAY_MS) {
+  const searchStartMs = Math.max(state.currentTimestampMs, state.scheduledSearchThroughTimestampMs + SIMULATION_MINUTE_MS)
+  for (let utcDayMs = Math.floor(searchStartMs / SIMULATION_DAY_MS) * SIMULATION_DAY_MS; utcDayMs <= searchEndMs; utcDayMs += SIMULATION_DAY_MS) {
     for (const candidate of scheduledCandidates(utcDayMs)) {
-      if (candidate.timestampMs <= state.currentTimestampMs || candidate.timestampMs >= lastTimestampMs || !isSimulationMarketOpen(candidate.timestampMs)) continue
+      if (candidate.timestampMs < searchStartMs || candidate.timestampMs > searchEndMs || !isSimulationMarketOpen(candidate.timestampMs)) continue
+      state.scheduledSearchThroughTimestampMs = candidate.timestampMs
       if (random.uniform() < parameters[candidate.probabilityKey]) {
         const { timestampMs, type, label, expected } = candidate
         nextEvent = { timestampMs, type, label: state.pair === 'GBP/USD' && label.includes('欧洲') ? '模拟英国经济数据' : label, expected }
@@ -181,6 +204,7 @@ function selectNextScheduledEvent(state: SimulationState, lastTimestampMs: numbe
   }
   state.scheduleRandomState = random.state
   state.upcomingScheduledEvent = nextEvent
+  if (!nextEvent) state.scheduledSearchThroughTimestampMs = searchEndMs
 }
 
 /** Initialize a reproducible generator without creating or revealing its first frame. */
@@ -200,8 +224,9 @@ export function initializeSimulation(pair: CurrencyPair, seed = DEFAULT_SIMULATI
     version: SIMULATION_VERSION, parameterVersion: SIMULATION_PARAMETER_VERSION,
     pair, seed, scenario: options.scenario ?? 'standard', randomState: random.state,
     eventRandomState: mixSeed(seed, 0x45564e54), scheduleRandomState: mixSeed(seed, 0x53434844),
+    scheduledSearchThroughTimestampMs: initialTimestampMs - SIMULATION_MINUTE_MS,
     frameIndex: originFrameIndex - 1, originFrameIndex, startTimestampMs,
-    maxFrames: options.maxFrames ?? DEFAULT_SIMULATION_MAX_FRAMES,
+    maxFrames: options.maxFrames === undefined ? DEFAULT_SIMULATION_MAX_FRAMES : options.maxFrames,
     initialTimestampMs, currentTimestampMs: initialTimestampMs,
     initialBidPrice, initialAskPrice, currentBidPrice: initialBidPrice, currentAskPrice: initialAskPrice,
     slowLogVariance: roundFactor(Math.sqrt(SIMULATION_VOLATILITY.slowStationaryVariance) * random.normal()),
@@ -212,9 +237,11 @@ export function initializeSimulation(pair: CurrencyPair, seed = DEFAULT_SIMULATI
   }
   state.randomState = random.state
   validateSimulationState(state)
-  const lastTimestampMs = lastSimulationTimestamp(state.initialTimestampMs, state.maxFrames - state.originFrameIndex)
-  if (lastTimestampMs > MAX_SIMULATION_TIMESTAMP_MS) fail('练习结束日期超出模拟时钟支持范围。')
-  selectNextScheduledEvent(state, lastTimestampMs)
+  if (state.maxFrames !== null) {
+    const lastTimestampMs = lastSimulationTimestamp(state.initialTimestampMs, state.maxFrames - state.originFrameIndex)
+    if (lastTimestampMs > MAX_SIMULATION_TIMESTAMP_MS) fail('练习结束日期超出模拟时钟支持范围。')
+  }
+  selectNextScheduledEvent(state)
   return state
 }
 
@@ -286,9 +313,9 @@ function createSpreadPrice(state: SimulationState, timestampMs: number, liquidit
 
 export function advanceSimulation(savedState: SimulationState): SimulationStep | null {
   validateSimulationState(savedState)
-  if (savedState.frameIndex >= savedState.maxFrames - 1) return null
+  if (savedState.maxFrames !== null && savedState.frameIndex >= savedState.maxFrames - 1) return null
   const timestampMs = nextSimulationTimestamp(savedState.currentTimestampMs)
-  if (timestampMs > MAX_SIMULATION_TIMESTAMP_MS) fail('下一根行情超出模拟时钟支持范围。')
+  if (timestampMs > MAX_SIMULATION_TIMESTAMP_MS) fail('已到达 2099 年模拟日期边界，行情已暂停。请创建新练习继续。')
   const elapsedMinutes = (timestampMs - savedState.currentTimestampMs) / SIMULATION_MINUTE_MS
   const state: SimulationState = { ...savedState, frameIndex: savedState.frameIndex + 1, currentTimestampMs: timestampMs }
   const random = new RandomStream(savedState.randomState)
@@ -361,9 +388,8 @@ export function advanceSimulation(savedState: SimulationState): SimulationStep |
   state.currentAskPrice = decimalToString(askPrice)
   state.randomState = random.state
   state.eventRandomState = eventRandom.state
-  if (scheduled || state.frameIndex === state.maxFrames - 1) {
-    selectNextScheduledEvent(state, lastSimulationTimestamp(timestampMs, state.maxFrames - 1 - state.frameIndex))
-  }
+  if (scheduled) state.upcomingScheduledEvent = null
+  selectNextScheduledEvent(state)
   validateSimulationState(state)
   const frame: MarketFrame = {
     quote: { timestampMs, bidPrice: state.currentBidPrice, askPrice: state.currentAskPrice, askSource: 'training' },

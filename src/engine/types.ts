@@ -89,10 +89,13 @@ export interface SimulationState {
   randomState: number
   eventRandomState: number
   scheduleRandomState: number
+  /** Scheduled candidates at or before this minute have already been sampled. */
+  scheduledSearchThroughTimestampMs: number
   frameIndex: number
   originFrameIndex: number
   startTimestampMs: number
-  maxFrames: number
+  /** null continues until the user pauses or a supported-clock boundary is reached. */
+  maxFrames: number | null
   /** Quote time immediately before the first generated suffix frame. */
   initialTimestampMs: number
   currentTimestampMs: number
