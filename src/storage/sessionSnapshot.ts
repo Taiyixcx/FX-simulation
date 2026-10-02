@@ -2,7 +2,7 @@ import { calculateAccount } from '../engine/account'
 import { MoneyDecimal } from '../engine/decimal'
 import { closePosition, openPosition, settleDepletedAccount } from '../engine/execution'
 import { advanceSimulation, createSimulationFromQuote, initializeSimulation, validateSimulationState } from '../engine/simulationSource'
-import type { AccountState, CurrencyPair, MarketFrame, Position, SimulationScenario, SimulationState, TradeRecord } from '../engine/types'
+import type { AccountState, CurrencyPair, MarketFrame, Position, SimulationScenario, SimulationState, SimulationStep, TradeRecord } from '../engine/types'
 
 export interface SessionSimulationConfig {
   version: 2
@@ -42,6 +42,40 @@ export function createSimulationConfig(state: SimulationState): SessionSimulatio
     initialTimestampMs: state.initialTimestampMs,
     initialBidPrice: state.initialBidPrice,
     initialAskPrice: state.initialAskPrice,
+  }
+}
+
+interface SimulationReplayCache {
+  key: string
+  initialState: SimulationState
+  steps: SimulationStep[]
+}
+
+const MAX_CACHED_REPLAY_STEPS = 1440
+// One configuration and at most 1,440 generated steps; no caller-owned state is cached.
+let simulationReplayCache: SimulationReplayCache | null = null
+
+function getSimulationReplayCache(currencyPair: CurrencyPair, config: SessionSimulationConfig): SimulationReplayCache {
+  const key = JSON.stringify([currencyPair, config])
+  if (simulationReplayCache?.key === key) return simulationReplayCache
+  const initialState = initializeSimulation(currencyPair, config.seed, {
+    startTimestampMs: config.startTimestampMs,
+    maxFrames: config.maxFrames,
+    scenario: config.scenario,
+    originFrameIndex: config.originFrameIndex,
+    initialTimestampMs: config.initialTimestampMs,
+    initialBidPrice: config.initialBidPrice,
+    initialAskPrice: config.initialAskPrice,
+  })
+  simulationReplayCache = { key, initialState, steps: [] }
+  return simulationReplayCache
+}
+
+function copySimulationState(state: SimulationState): SimulationState {
+  return {
+    ...state,
+    lastEvent: state.lastEvent ? { ...state.lastEvent } : null,
+    upcomingScheduledEvent: state.upcomingScheduledEvent ? { ...state.upcomingScheduledEvent } : null,
   }
 }
 
@@ -200,7 +234,8 @@ function readSourceState(snapshot: Record<string, unknown>, currencyPair: Curren
   // The engine validates the complete untrusted state before its typed fields are used.
   const sourceState = source as unknown as SimulationState
   validateSimulationState(sourceState)
-  if (!sameStructure(record(snapshot.simulationConfig, '模拟配置'), createSimulationConfig(sourceState))) fail('模拟配置与当前状态不一致')
+  const config = createSimulationConfig(sourceState)
+  if (!sameStructure(record(snapshot.simulationConfig, '模拟配置'), config)) fail('模拟配置与当前状态不一致')
   const originFrameIndex = sourceState.originFrameIndex
   if (originFrameIndex > frames.length) fail('新模拟起点超过已保存行情')
   verifyRetainedFrames(frames, originFrameIndex, startTimestampMs, currencyPair)
@@ -210,23 +245,22 @@ function readSourceState(snapshot: Record<string, unknown>, currencyPair: Curren
     sameDecimal(sourceState.initialAskPrice, anchor.askPrice, '衔接 Ask')
     if (sourceState.initialTimestampMs !== anchor.timestampMs) fail('衔接时间与保留行情不一致')
   }
-  let replayState = initializeSimulation(currencyPair, seed, {
-    startTimestampMs,
-    maxFrames,
-    scenario: sourceState.scenario,
-    originFrameIndex,
-    initialTimestampMs: sourceState.initialTimestampMs,
-    initialBidPrice: sourceState.initialBidPrice,
-    initialAskPrice: sourceState.initialAskPrice,
-  })
+  const cache = getSimulationReplayCache(currencyPair, config)
+  let replayState = cache.initialState
   for (let index = originFrameIndex; index < frames.length; index += 1) {
-    const next = advanceSimulation(replayState)
-    if (!next) fail('行情进度超过数据末尾')
+    const cacheIndex = index - originFrameIndex
+    let next = cache.steps[cacheIndex]
+    if (!next) {
+      const generated = advanceSimulation(replayState)
+      if (!generated) fail('行情进度超过数据末尾')
+      next = generated
+      if (cacheIndex < MAX_CACHED_REPLAY_STEPS) cache.steps.push(generated)
+    }
     verifyFrame(frames[index]!, next.frame)
     replayState = next.state
   }
   if (!sameStructure(source, replayState)) fail('模拟因素、事件或随机状态与已保存行情不一致')
-  return replayState
+  return copySimulationState(replayState)
 }
 
 /** Validate untrusted DTOs, including deterministic market history and the full account ledger. */

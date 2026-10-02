@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { closePosition, openPosition } from '../../src/engine/execution'
-import { advanceSimulation } from '../../src/engine/simulationSource'
-import { validateSessionSnapshot } from '../../src/storage/sessionSnapshot'
+import { advanceSimulation, createSimulation } from '../../src/engine/simulationSource'
+import * as simulationSource from '../../src/engine/simulationSource'
+import { createSimulationConfig, validateSessionSnapshot } from '../../src/storage/sessionSnapshot'
 import { extendSession, makeLegacySession, makeSession } from './sessionFixture'
 
 describe('session snapshot validation', () => {
@@ -152,5 +153,78 @@ describe('session snapshot validation', () => {
       mutate(copy)
       expect(() => validateSessionSnapshot(copy)).toThrow()
     }
+  })
+
+  it('reuses generated steps across growing and shorter prefixes while checking all supplied history and state', () => {
+    const shorter = extendSession(makeSession('EUR/USD', 60, 'standard', Date.UTC(2024, 2, 5, 0, 1)), 4)
+    const longer = extendSession(shorter, 8)
+    const advance = vi.spyOn(simulationSource, 'advanceSimulation')
+    expect(validateSessionSnapshot(shorter)).toEqual(shorter)
+    expect(advance).toHaveBeenCalledTimes(shorter.frames.length)
+    advance.mockClear()
+    expect(validateSessionSnapshot(longer)).toEqual(longer)
+    expect(advance).toHaveBeenCalledTimes(longer.frames.length - shorter.frames.length)
+    advance.mockClear()
+    expect(validateSessionSnapshot(shorter)).toEqual(shorter)
+    expect(validateSessionSnapshot(longer)).toEqual(longer)
+    const changedHistory = structuredClone(longer)
+    changedHistory.frames[1]!.highPrice = '2'
+    expect(() => validateSessionSnapshot(changedHistory)).toThrow()
+    const changedState = structuredClone(longer)
+    changedState.sourceState.fastLogVariance += 0.1
+    expect(() => validateSessionSnapshot(changedState)).toThrow()
+    expect(advance).not.toHaveBeenCalled()
+  })
+
+  it('isolates cached generation from mutations of both input and returned state, events, config and frames', () => {
+    let original = makeSession('EUR/USD', 1440, 'eventful', Date.UTC(2024, 2, 6, 7, 55))
+    while (!original.sourceState.lastEvent || !original.sourceState.upcomingScheduledEvent) {
+      if (!advanceSimulation(original.sourceState)) throw new Error('eventful fixture did not produce a published event and future schedule')
+      original = extendSession(original)
+    }
+    const input = structuredClone(original)
+    const restored = validateSessionSnapshot(input)
+    restored.sourceState.randomState = 1
+    restored.sourceState.lastEvent!.detail = 'changed returned event'
+    restored.sourceState.upcomingScheduledEvent!.expected = 'changed returned schedule'
+    restored.simulationConfig.initialBidPrice = '2'
+    restored.frames[0]!.highPrice = '2'
+    input.sourceState.lastEvent!.label = 'changed caller event'
+    input.sourceState.upcomingScheduledEvent!.label = 'changed caller schedule'
+    expect(() => validateSessionSnapshot(input)).toThrow()
+    expect(validateSessionSnapshot(original)).toEqual(original)
+    expect(advanceSimulation(validateSessionSnapshot(original).sourceState)).toEqual(advanceSimulation(original.sourceState))
+  })
+
+  it('limits stored replay steps to 1440 while validating longer histories and revisiting shorter ones', () => {
+    const cachedPrefix = extendSession(makeSession('EUR/USD', 1460, 'standard', Date.UTC(2024, 2, 7, 0, 1)), 1439)
+    const longer = extendSession(cachedPrefix, 2)
+    const advance = vi.spyOn(simulationSource, 'advanceSimulation')
+    expect(validateSessionSnapshot(cachedPrefix)).toEqual(cachedPrefix)
+    advance.mockClear()
+    expect(validateSessionSnapshot(longer)).toEqual(longer)
+    expect(advance).toHaveBeenCalledTimes(2)
+    advance.mockClear()
+    expect(validateSessionSnapshot(longer)).toEqual(longer)
+    expect(advance).toHaveBeenCalledTimes(2)
+    advance.mockClear()
+    expect(validateSessionSnapshot(cachedPrefix)).toEqual(cachedPrefix)
+    expect(advance).not.toHaveBeenCalled()
+  })
+
+  it('keeps different currency pairs separate even when their entire replay configuration matches', () => {
+    const eur = makeSession('EUR/USD', 30, 'standard', Date.UTC(2024, 2, 8, 0, 1))
+    const simulation = createSimulation('GBP/USD', eur.sourceState.seed, {
+      startTimestampMs: eur.sourceState.startTimestampMs,
+      maxFrames: eur.sourceState.maxFrames,
+      scenario: eur.sourceState.scenario,
+      initialBidPrice: eur.sourceState.initialBidPrice,
+      initialAskPrice: eur.sourceState.initialAskPrice,
+    })
+    const gbp = { ...eur, pair: 'GBP/USD' as const, sourceState: simulation.state, simulationConfig: createSimulationConfig(simulation.state), frames: [simulation.frame] }
+    expect(gbp.simulationConfig).toEqual(eur.simulationConfig)
+    expect(validateSessionSnapshot(eur)).toEqual(eur)
+    expect(validateSessionSnapshot(gbp)).toEqual(gbp)
+    expect(validateSessionSnapshot(eur)).toEqual(eur)
   })
 })
