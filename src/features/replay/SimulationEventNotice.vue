@@ -6,8 +6,8 @@ import { useSessionStore } from '../../stores/useSessionStore'
 import { formatTimestamp } from '../../priceFormatting'
 
 const session = useSessionStore()
-const lastEvent = computed(() => session.snapshot?.sourceState.lastEvent ?? null)
-const upcomingEvent = computed(() => session.snapshot?.sourceState.upcomingScheduledEvent ?? null)
+const lastEvent = computed(() => session.lastEvent)
+const upcomingEvent = computed(() => session.upcomingEvent)
 </script>
 
 <template>

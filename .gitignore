@@ -19,6 +19,7 @@ backups/
 imports/
 local-data/
 /public/data/**/*.csv
+!/public/data/csv-template.csv
 /public/data/**/*.zip
 /public/data/**/*.bi5
 

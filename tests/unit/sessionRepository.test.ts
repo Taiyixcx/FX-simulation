@@ -135,7 +135,7 @@ describe('IndexedDB session repository', () => {
     const success = new Promise<IDBDatabase>((resolve) => { resolveSuccess = resolve })
     // An upgrade makes IndexedDB emit blocked while the earlier connection remains open.
     vi.spyOn(indexedDB, 'open').mockImplementation((databaseName, version) => {
-      const request = originalOpen(databaseName, databaseName === name ? 2 : version)
+      const request = originalOpen(databaseName, version)
       request.addEventListener('success', () => resolveSuccess(request.result), { once: true })
       return request
     })
@@ -299,6 +299,7 @@ describe('IndexedDB session repository', () => {
     await seedLegacySnapshot(name, legacy)
     const created = repository(name)
     const loaded = (await created.loadCurrent())!
+    if (loaded.schemaVersion !== 3) throw new Error('expected simulation snapshot')
     expect(loaded.sourceState).toMatchObject({ version: 2, maxFrames: null, originFrameIndex: original.frames.length, frameIndex: original.sourceState.frameIndex, currentBidPrice: original.sourceState.currentBidPrice })
     expect(loaded.frames).toEqual(original.frames)
     expect(await readRecord(name, 'sessions', original.id)).toEqual(legacy)
@@ -339,6 +340,7 @@ describe('IndexedDB session repository', () => {
     expect(chunks.map(chunk => [chunk.chunkIndex, chunk.frames.length])).toEqual([[0, 1440], [1, 1440], [2, 121]])
     expect(chunks.flatMap(chunk => chunk.frames).slice(-1440)).toEqual(snapshot.frames)
     const restored = (await repository(name).loadCurrent())!
+    if (restored.schemaVersion !== 3) throw new Error('expected simulation snapshot')
     expect(restored).toEqual(snapshot)
     expect(restored.trades[0]!.openedAtMs).toBe(chunks[0]!.frames[0]!.quote.timestampMs)
     expect(restored.trades[0]!.openedAtMs).toBeLessThan(restored.frames[0]!.quote.timestampMs)
@@ -439,6 +441,7 @@ describe('IndexedDB session repository', () => {
     const next = extendSession(expected)
     await created.save(next)
     const returned = (await created.loadCurrent())!
+    if (returned.schemaVersion !== 3) throw new Error('expected simulation snapshot')
     returned.frames[0]!.lowPrice = '2'
     returned.sourceState.lastEvent!.detail = 'returned mutation'
     returned.sourceState.upcomingScheduledEvent!.label = 'returned mutation'

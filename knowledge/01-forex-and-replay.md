@@ -80,6 +80,10 @@
 - 已核查：Generic ASCII M1 的字段为时间、Bid OHLC、Volume；tick 字段为时间、Bid、Ask、Volume，时间精确到毫秒。两种格式的分隔符与字段不同。
 - 适用限制：原始记录需经转换和校验。使用双边 tick 聚合完成分钟、保留最后一组 Bid/Ask 是本项目方案，不是 HistData 原生 M1 自带 Ask 的保证；缺口不应补成虚构走势。
 
+2026-10-02 重新核对 [HistData 官方用途说明](https://www.histdata.com/about-us/)（机构：HistData；类型：提供方网站说明）：其免费数据用于个人策略与 EA 测试，与本机练习用途相符；未找到明确的公开再分发授权，价格文件不纳入 Git。此结论与文件格式核查分开记录，不把免费访问当成开放数据许可。
+
+本轮实际取得 EUR/USD、GBP/USD 的 2024-03 Generic ASCII 双边 tick，使用本机工具按固定 EST 转 UTC、聚合完成分钟，并保留末组报价与来源缺口。下载与转换证据、原始及输出 SHA-256 见 [本机样本目录](../public/data/README.md)，实际执行记录见 [P2 验收](../overview/04-roadmap-and-acceptance.md#4-实际验证记录)。这证明本轮文件处理与报价口径已核查，不能代表整个外汇市场的唯一报价或验证模拟器参数。
+
 ### F11：Dukascopy 历史导出入口
 
 [Forex Historical Data Export](https://www.dukascopy.com/swiss/english/marketwatch/historical/) · **Dukascopy Bank｜官方数据工具说明**。对应：[候选历史来源](../overview/03-data-and-trading.md)。

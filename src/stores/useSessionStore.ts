@@ -4,12 +4,16 @@ import { calculateAccount } from '../engine/account'
 import { MoneyDecimal } from '../engine/decimal'
 import { closePosition, openPosition, settleDepletedAccount } from '../engine/execution'
 import { advanceSimulation, createSimulation } from '../engine/simulationSource'
+import { advanceHistory } from '../engine/historySource'
+import type { HistoryDataset, HistoryDatasetSummary } from '../engine/historyTypes'
 import { MAX_SIMULATION_TIMESTAMP_MS, nextSimulationTimestamp } from '../engine/simulationParameters'
 import type { CurrencyPair, SimulationScenario, TradeDirection } from '../engine/types'
 import { createSessionRepository, SessionLoadError } from '../storage/sessionRepository'
 import type { SessionRepository } from '../storage/sessionRepository'
 import { createSimulationConfig, SESSION_FRAME_WINDOW_SIZE } from '../storage/sessionSnapshot'
 import type { SessionSnapshot } from '../storage/sessionSnapshot'
+import { createHistoricalSnapshot } from '../storage/historicalSessionSnapshot'
+import type { PracticeSnapshot } from '../storage/historicalSessionSnapshot'
 
 export type ReplaySpeed = 1 | 5 | 10
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
@@ -41,7 +45,10 @@ function createSnapshot(pair: CurrencyPair, scenario: SimulationScenario = 'stan
 }
 
 export const useSessionStore = defineStore('session', () => {
-  const snapshot = shallowRef<SessionSnapshot | null>(null)
+  const snapshot = shallowRef<PracticeSnapshot | null>(null)
+  const historyDatasets = shallowRef<HistoryDatasetSummary[]>([])
+  const historyErrorMessage = ref('')
+  let activeHistoryDataset: HistoryDataset | null = null
   const isPlaying = ref(false)
   const speed = ref<ReplaySpeed>(1)
   const isBusy = ref(false)
@@ -54,12 +61,24 @@ export const useSessionStore = defineStore('session', () => {
   const isDisposed = ref(false)
 
   const currentQuote = computed(() => snapshot.value?.frames.at(-1)?.quote ?? null)
-  const scenario = computed(() => snapshot.value?.sourceState.scenario ?? 'standard')
-  const lastEvent = computed(() => snapshot.value?.sourceState.lastEvent ?? null)
+  const isHistorical = computed(() => snapshot.value?.schemaVersion === 4)
+  const scenario = computed(() => snapshot.value?.schemaVersion === 3 ? snapshot.value.sourceState.scenario : 'standard')
+  const lastEvent = computed(() => snapshot.value?.schemaVersion === 3 ? snapshot.value.sourceState.lastEvent : null)
+  const upcomingEvent = computed(() => snapshot.value?.schemaVersion === 3 ? snapshot.value.sourceState.upcomingScheduledEvent : null)
+  const historyMetadata = computed(() => {
+    const current = snapshot.value
+    return current?.schemaVersion === 4
+      ? historyDatasets.value.find(dataset => dataset.id === current.sourceState.datasetId)?.metadata ?? null : null
+  })
+  const currentGapMinutes = computed(() => {
+    if (!isHistorical.value || !snapshot.value || snapshot.value.frames.length < 2) return 0
+    const frames = snapshot.value.frames
+    return (frames.at(-1)!.quote.timestampMs - frames.at(-2)!.quote.timestampMs) / 60_000
+  })
   const accountMetrics = computed(() => snapshot.value && currentQuote.value ? calculateAccount(snapshot.value.account, currentQuote.value) : null)
   const isReady = computed(() => loadStatus.value === 'ready' && snapshot.value !== null)
   const canOperate = computed(() => isReady.value && !isBusy.value && saveStatus.value === 'saved' && !isDisposed.value)
-  const isCalendarEnded = computed(() => snapshot.value !== null && nextSimulationTimestamp(snapshot.value.sourceState.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS)
+  const isCalendarEnded = computed(() => snapshot.value?.schemaVersion === 3 && nextSimulationTimestamp(snapshot.value.sourceState.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS)
   const isEnded = computed(() => isCalendarEnded.value || (snapshot.value !== null && snapshot.value.sourceState.maxFrames !== null && snapshot.value.sourceState.frameIndex >= snapshot.value.sourceState.maxFrames - 1))
   const progressedFrameCount = computed(() => (snapshot.value?.sourceState.frameIndex ?? -1) + 1)
   const canAdvance = computed(() => canOperate.value && !isEnded.value && accountMetrics.value !== null && new MoneyDecimal(accountMetrics.value.equityUsd).gt(0))
@@ -70,7 +89,7 @@ export const useSessionStore = defineStore('session', () => {
     timer = null
   }
 
-  async function persist(nextSnapshot: SessionSnapshot): Promise<boolean> {
+  async function persist(nextSnapshot: PracticeSnapshot): Promise<boolean> {
     snapshot.value = nextSnapshot
     saveStatus.value = 'saving'
     try {
@@ -95,6 +114,10 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const raw = await repository.loadCurrent()
       if (raw !== null) {
+        if (raw.schemaVersion === 4) {
+          activeHistoryDataset = await repository.loadDataset(raw.sourceState.datasetId)
+          if (!activeHistoryDataset) throw new Error('历史数据集缺失，请保留浏览器数据。')
+        }
         snapshot.value = raw
         saveStatus.value = 'saved'
         rawRecoveryJson.value = null
@@ -105,6 +128,7 @@ export const useSessionStore = defineStore('session', () => {
         await persist(createSnapshot('EUR/USD'))
       }
       loadStatus.value = 'ready'
+      await refreshHistoryDatasets()
     } catch (error) {
       if (error instanceof SessionLoadError && error.rawSnapshot !== null) {
         try { rawRecoveryJson.value = JSON.stringify(error.rawSnapshot, null, 2) } catch { /* Preserve the original database when JSON export is unavailable. */ }
@@ -117,7 +141,7 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function operate(action: (current: SessionSnapshot) => SessionSnapshot): Promise<void> {
+  async function operate(action: (current: PracticeSnapshot) => PracticeSnapshot): Promise<void> {
     if (!canOperate.value || !snapshot.value) return
     isBusy.value = true
     errorMessage.value = ''
@@ -136,15 +160,23 @@ export const useSessionStore = defineStore('session', () => {
     await operate((current) => {
       let nextSnapshot = current
       for (let index = 0; index < count; index += 1) {
-        const next = advanceSimulation(nextSnapshot.sourceState)
-        if (!next) { pause(); break }
-        const closed = settleDepletedAccount(nextSnapshot.account, next.frame.quote)
-        const frames = [...nextSnapshot.frames, next.frame].slice(-SESSION_FRAME_WINDOW_SIZE)
+        let advanced: PracticeSnapshot
+        if (nextSnapshot.schemaVersion === 4) {
+          if (!activeHistoryDataset || activeHistoryDataset.id !== nextSnapshot.sourceState.datasetId) throw new Error('历史数据集尚未就绪。')
+          const next = advanceHistory(nextSnapshot.sourceState, activeHistoryDataset)
+          if (!next) { pause(); break }
+          advanced = { ...nextSnapshot, sourceState: next.state }
+          advanced.frames = [...nextSnapshot.frames, next.frame].slice(-SESSION_FRAME_WINDOW_SIZE)
+        } else {
+          const next = advanceSimulation(nextSnapshot.sourceState)
+          if (!next) { pause(); break }
+          advanced = { ...nextSnapshot, sourceState: next.state }
+          advanced.frames = [...nextSnapshot.frames, next.frame].slice(-SESSION_FRAME_WINDOW_SIZE)
+        }
+        const closed = settleDepletedAccount(nextSnapshot.account, advanced.frames.at(-1)!.quote)
         nextSnapshot = {
-          ...nextSnapshot,
-          sourceState: next.state,
-          frameStartIndex: next.state.frameIndex + 1 - frames.length,
-          frames,
+          ...advanced,
+          frameStartIndex: advanced.sourceState.frameIndex + 1 - advanced.frames.length,
           account: closed?.account ?? nextSnapshot.account,
           trades: closed ? [...nextSnapshot.trades, closed.trade] : nextSnapshot.trades,
         }
@@ -153,8 +185,8 @@ export const useSessionStore = defineStore('session', () => {
           pause()
           break
         }
-        if ((next.state.maxFrames !== null && next.state.frameIndex >= next.state.maxFrames - 1)
-          || nextSimulationTimestamp(next.state.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS) { pause(); break }
+        if ((nextSnapshot.sourceState.maxFrames !== null && nextSnapshot.sourceState.frameIndex >= nextSnapshot.sourceState.maxFrames - 1)
+          || (nextSnapshot.schemaVersion === 3 && nextSimulationTimestamp(nextSnapshot.sourceState.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS)) { pause(); break }
       }
       return { ...nextSnapshot, revision: current.revision + 1 }
     })
@@ -201,7 +233,11 @@ export const useSessionStore = defineStore('session', () => {
     isBusy.value = true
     errorMessage.value = ''
     try {
-      if (await persist(snapshot.value)) await persist(createSnapshot(pair, nextScenario, snapshot.value.sourceState.seed))
+      const previousSeed = snapshot.value.schemaVersion === 3 ? snapshot.value.sourceState.seed : undefined
+      if (await persist(snapshot.value)) {
+        activeHistoryDataset = null
+        await persist(createSnapshot(pair, nextScenario, previousSeed))
+      }
     } catch (error) {
       errorMessage.value = errorText(error)
     } finally {
@@ -211,6 +247,48 @@ export const useSessionStore = defineStore('session', () => {
 
   async function switchPair(pair: CurrencyPair): Promise<void> {
     if (snapshot.value?.pair !== pair) await startNewSession(pair)
+  }
+
+  async function refreshHistoryDatasets(): Promise<void> {
+    try { historyDatasets.value = await repository.listDatasets() }
+    catch (error) { historyErrorMessage.value = `读取历史数据列表失败：${errorText(error)}` }
+  }
+
+  async function importHistoryDataset(dataset: HistoryDataset): Promise<boolean> {
+    if (!canOperate.value) return false
+    pause()
+    isBusy.value = true
+    historyErrorMessage.value = ''
+    try {
+      await repository.importDataset(dataset)
+      historyDatasets.value = [...historyDatasets.value, {
+        id: dataset.id, pair: dataset.pair, fingerprint: dataset.fingerprint, metadata: { ...dataset.metadata },
+      }]
+      return true
+    } catch (error) {
+      historyErrorMessage.value = `导入失败：${errorText(error)} 当前练习和已有数据保留。`
+      return false
+    } finally { isBusy.value = false }
+  }
+
+  async function startHistorySession(datasetId: string): Promise<void> {
+    if (!canOperate.value || !snapshot.value) return
+    pause()
+    isBusy.value = true
+    historyErrorMessage.value = ''
+    errorMessage.value = ''
+    try {
+      const dataset = await repository.loadDataset(datasetId)
+      if (!dataset) throw new Error('历史数据集不存在。')
+      const nextSnapshot = createHistoricalSnapshot(dataset)
+      if (await persist(snapshot.value)) {
+        activeHistoryDataset = dataset
+        await persist(nextSnapshot)
+      }
+    } catch (error) {
+      historyErrorMessage.value = `开始历史练习失败：${errorText(error)} 原有数据保留。`
+      errorMessage.value = historyErrorMessage.value
+    } finally { isBusy.value = false }
   }
 
   async function retrySave(): Promise<void> {
@@ -242,9 +320,11 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    snapshot, currentQuote, scenario, lastEvent, progressedFrameCount, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
+    snapshot, currentQuote, scenario, lastEvent, upcomingEvent, isHistorical, historyDatasets, historyMetadata, historyErrorMessage, currentGapMinutes,
+    progressedFrameCount, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
     isEnded, isCalendarEnded, canAdvance, saveStatus, loadStatus, errorMessage, rawRecoveryJson,
     initialize, setSpeed, next, play, pause, openTrade, closeTrade, switchPair,
-    startNewSession, retrySave, retryLoad, exportSnapshotJson, dispose, setRepositoryForTesting,
+    startNewSession, startHistorySession, importHistoryDataset, refreshHistoryDatasets,
+    retrySave, retryLoad, exportSnapshotJson, dispose, setRepositoryForTesting,
   }
 })

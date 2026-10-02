@@ -1,6 +1,6 @@
 # 架构与目录职责
 
-本文记录 P1 已落地的技术与内部接口，并单独说明后续扩展。实际阶段状态与验证结果见 [路线与验收](04-roadmap-and-acceptance.md)，开发约束见 [AGENTS.md](../AGENTS.md)，依据见 [前端与存储知识](../knowledge/02-web-engineering.md)。
+本文记录 P1、P2 已落地的技术与内部接口，并单独说明后续扩展。实际阶段状态与验证结果见 [路线与验收](04-roadmap-and-acceptance.md)，开发约束见 [AGENTS.md](../AGENTS.md)，依据见 [前端与存储知识](../knowledge/02-web-engineering.md)。
 
 ## 技术栈
 
@@ -14,7 +14,7 @@
 | 图表 | Apache ECharts 6.1.0 | 按需引入折线、K 线、十字线、缩放、平移和实际成交标记 |
 | 字体 | @fontsource/inter 5.3.0 | 本地打包英文及数字的 Inter 400/500/600/700 字重；中文使用系统字体 |
 | 计算 | Decimal.js 10.6.0 | 报价、数量、资金与盈亏的十进制运算 |
-| 保存 | 浏览器原生 IndexedDB | 会话快照与当前会话索引的事务保存 |
+| 保存 | 浏览器原生 IndexedDB | 行情归档、历史数据集、会话快照与当前索引的事务保存 |
 | 单元验证 | Vitest 5.0.3、fake-indexeddb 6.2.5 | 引擎、图表适配、快照、事务和 Store |
 | 流程验证 | Playwright 1.63.0 | Chromium 内的工作台操作和刷新恢复 |
 
@@ -30,6 +30,7 @@ FX-simulation/
 ├─ knowledge/                   # 主题笔记及官方资料
 ├─ public/
 │  ├─ favicon.svg              # 与工作台配色一致的本地站点图标
+│  ├─ data/                    # 本机历史样本目录、来源说明及生成 CSV 模板
 │  └─ licenses/                # 随构建复制的运行依赖许可及 NOTICE
 ├─ src/
 │  ├─ App.vue                   # 工作台布局、保存状态和功能装配
@@ -45,7 +46,9 @@ FX-simulation/
 │  │  ├─ replay/
 │  │  │  ├─ ReplayControls.vue  # 暂停、单步、调速及累计/有限进度
 │  │  │  ├─ SimulationScenario.vue # 新会话的练习情景选择
-│  │  │  └─ SimulationEventNotice.vue # 已发生事件与公开计划提示
+│  │  │  ├─ SimulationEventNotice.vue # 已发生事件与公开计划提示
+│  │  │  ├─ HistoryDataPanel.vue # CSV 导入、本机样本及历史练习入口
+│  │  │  └─ localHistorySamples.ts # 本机目录解析、文件校验及读取
 │  │  ├─ trading/
 │  │  │  ├─ AccountSummary.vue # 账户指标
 │  │  │  └─ TradePanel.vue      # 金额输入、开仓和平仓
@@ -54,6 +57,9 @@ FX-simulation/
 │  ├─ engine/
 │  │  ├─ simulationSource.ts    # 当前市场模拟、事件与逐根双边报价
 │  │  ├─ simulationParameters.ts # 版本化训练参数与纯规则市场时钟
+│  │  ├─ historySource.ts       # 历史源、逐根推进、摘要与完整指纹校验
+│  │  ├─ historyCsv.ts          # CSV 解析、字段校验及行号错误
+│  │  ├─ historyTypes.ts        # 数据集、来源元信息与历史进度类型
 │  │  ├─ execution.ts           # 开仓、平仓与权益耗尽结算
 │  │  ├─ account.ts             # 账户估值与交易输入校验
 │  │  ├─ decimal.ts             # 复用的十进制政策与解析
@@ -63,14 +69,17 @@ FX-simulation/
 │  │  └─ useSessionStore.ts     # 当前练习、调度器与保存协调
 │  ├─ storage/
 │  │  ├─ sessionSnapshot.ts     # 快照、增量校验、迁移与账本重建
-│  │  └─ sessionRepository.ts   # 行情分块、IndexedDB 事务及版本冲突
+│  │  ├─ historicalSessionSnapshot.ts # 历史快照、联合类型及前缀账本校验
+│  │  └─ sessionRepository.ts   # 数据集、行情分块、事务及版本冲突
 │  └─ styles/
 │     └─ base.css              # 视觉变量、基础排版与焦点
 ├─ tests/
 │  ├─ unit/                    # 纯逻辑、存储与会话测试
 │  └─ e2e/                     # 浏览器关键流程
 ├─ scripts/
-│  └─ checkSimulation.mjs      # 多种子内部统计与机械周期检查
+│  ├─ checkSimulation.mjs      # 多种子内部统计与机械周期检查
+│  ├─ checkContinuousSimulation.mjs # 持续模拟的纯引擎运行检查
+│  └─ convertHistData.mjs      # 本机 HistData 文件转换及来源记录
 ├─ index.html
 ├─ package.json
 ├─ package-lock.json
@@ -80,9 +89,9 @@ FX-simulation/
 └─ playwright.config.ts
 ```
 
-后续 P2 按需要增加历史源、CSV 校验、本机转换脚本、`public/data/` 与模板；P3 增加会话列表、备注、三步引导及完整备份恢复；P4 增加 `start.cmd`。当前没有这些实现。`src/components/` 的图标和信息提示已有跨功能复用；`src/composables/` 仍未预建，功能独用逻辑留在 feature 内。
+历史源、CSV 校验、本机转换脚本、`public/data/` 与模板已在 P2 落地；真实样本文件只在本机准备，公开源码保留来源说明，不自动公开再分发行情。后续 P3 增加会话列表、备注、三步引导及完整备份恢复；P4 增加 `start.cmd`，当前尚未实现。`src/components/` 的图标和信息提示已有跨功能复用；`src/composables/` 仍未预建，功能独用逻辑留在 feature 内。
 
-`priceFormatting.ts` 为账户、报价、持仓和记录共用；金额与盈亏格式化可选择是否附带币种，组件分开显示 USD 时不再拆改已格式化字符串。行情源直接放在 `engine/`。用户导入数据未来进入 IndexedDB；公开源码不能自动包含授权未核实的真实行情，来源规则见 [数据与交易](03-data-and-trading.md)。
+`priceFormatting.ts` 为账户、报价、持仓和记录共用；金额与盈亏格式化可选择是否附带币种，组件分开显示 USD 时不再拆改已格式化字符串。行情源直接放在 `engine/`。用户导入数据保存到 IndexedDB，不回写源码；公开源码不能自动包含授权未核实的真实行情，来源规则见 [数据与交易](03-data-and-trading.md)。
 
 ## 职责与依赖
 
@@ -94,7 +103,9 @@ FX-simulation/
 | `engine/` | 行情、成交、账户和纯数值校验 | 不依赖 Vue、Pinia、DOM、计时器或浏览器存储 |
 | `useSessionStore.ts` | 逐根推进、交易、切换、保存状态与重试 | 调用引擎和 storage，拥有并清理回放计时器 |
 | `sessionSnapshot.ts` | 校验不可信快照、验证增量与完整分块历史、迁移旧可见前缀并重建账本 | 不执行旧模型；仅可信已验证状态可作为增量基准，不另写账户公式 |
-| `sessionRepository.ts` | 数据库连接、行情分块、原子事务、当前索引和并发版本检查 | 归档、快照与指针提交完成才确认保存；不驱动图表或选择成交价 |
+| `historicalSessionSnapshot.ts` | 历史头快照、已推进前缀和增量校验 | 引用完整已验证数据集，与模拟快照实际复用同一账本验证器；未来报价不进入账本 |
+| `sessionRepository.ts` | 数据库连接、行情分块、独立数据集、原子事务、当前索引和并发版本检查 | 归档、快照与指针提交完成才确认保存；导入只新增数据集，不改变当前练习 |
+| `localHistorySamples.ts`、`HistoryDataPanel.vue` | 本机静态目录与 CSV 文件读取、来源输入和导入反馈 | 文件读取与下载留在 feature；解析、指纹和行情校验交给纯引擎，数据保存交给 Store |
 | `styles/`、`priceFormatting.ts` | 共享基础样式和数值展示 | 展示舍入不回写账本 |
 | `tests/` | 业务、事务与浏览器流程验证 | 不存放业务源码或生成产物 |
 
@@ -102,7 +113,7 @@ FX-simulation/
 Vue 操作 ───────► useSessionStore
                         │ 逐根推进 / 开仓 / 平仓
                         ▼
-             模拟行情源 + 交易与账户引擎
+          模拟 / 历史行情源 + 交易与账户引擎
                         │ 同一可见帧与账户结果
                         ▼
                  一致的会话状态 ───► 图表、下单、成交记录
@@ -120,7 +131,7 @@ Vue 操作 ───────► useSessionStore
 
 ## 已落地内部接口
 
-所有金额、报价和数量跨模块传递十进制字符串；UTC 时间使用毫秒。源码没有网络接口。
+所有金额、报价和数量跨模块传递十进制字符串；UTC 时间使用毫秒。引擎没有外部行情网络接口；本机样本读取通过 feature 请求同一站点的静态文件。
 
 | 类型或函数 | 当前内容 |
 | --- | --- |
@@ -131,20 +142,28 @@ Vue 操作 ───────► useSessionStore
 | `initializeSimulation(...)`、`createSimulationFromQuote(...)` | 从新练习或旧会话最后双边报价建立当前模型起点；`originFrameIndex` 区分保留前缀与当前生成后缀 |
 | `advanceSimulation(state)` | 返回下一根及新状态，不修改旧状态；有限来源到指定末尾返回 `null`，持续源到模拟时钟边界报告错误并暂停 |
 | `SimulationEvent`、`ScheduledSimulationEvent` | 最近已发生事件含时间、类型、标签、详情与标准化惊喜；计划事件仅时间、类型、标签与预期，无实际结果 |
+| `HistoryDataset`、`HistoryDatasetSummary` | 不可变完整行情、品种、规范化内容指纹及来源元信息；摘要只含标识、品种、指纹和元信息 |
+| `HistoryState`、`HistoryStep` | 状态只含数据集引用、指纹、已推进索引、总根数和当前 UTC 时间；单步返回一根完成行情 |
+| `parseHistoryCsv(text, pair, metadata?)` | 解析 CSV 并校验完整报价、来源元信息与指纹；错误包含原文件行号和字段，成功后返回已验证数据集 |
+| `createHistory(dataset)`、`advanceHistory(state, dataset)` | 从已验证数据集返回首根或下一根；只读 source、不修改数据集，末尾返回 `null` |
+| `validateHistoryDataset(...)`、`validateHistoryState(...)` | 数据集全量检查及 SHA-256 指纹核对；状态必须引用相同数据集、指纹和实际索引时间 |
 | `AccountState`、`Position` | 已结算余额、单笔持仓；持仓包含方向、名义金额、数量、成交价和开仓时间 |
 | `calculateAccount(account, quote)` | 从当前可平仓报价派生账户指标 |
 | `openPosition(...)` | 校验输入和可用资金，返回候选账户 |
 | `closePosition(...)` | 返回已结算账户和单笔 `TradeRecord` |
 | `settleDepletedAccount(...)` | 逐根检查权益耗尽，需要结清时返回同一成交结果，否则为 `null` |
-| `SessionSnapshot` | 当前格式版本、`id`、`revision`、品种、完整模拟状态、保留历史类别、`frameStartIndex` 与最近 `frames`、账户及完整成交 |
+| `SessionSnapshot` | 保留模拟格式版本 3、`id`、`revision`、品种、完整模拟状态、保留历史类别、`frameStartIndex` 与最近 `frames`、账户及完整成交 |
+| `HistoricalSessionSnapshot`、`PracticeSnapshot` | 历史格式版本 4，模式为 `historical`，保存历史进度引用、已推进窗口、账户和完整成交；联合类型保留原模拟快照接口 |
 | 快照与历史校验 | 旧格式校验已有行情与账本后内存迁移；加载分块验证完整历史；保存以可信基准验证增量，拒绝陈旧或篡改数据 |
-| `SessionRepository` | `loadCurrent()`、`save(snapshot)`、`close()`；行情归档、当前快照及索引在同一事务提交 |
+| `SessionRepository` | `loadCurrent()`、`save(snapshot)`、`importDataset(dataset)`、`listDatasets()`、`loadDataset(id)`、`close()`；历史导入与会话提交分别使用原子事务 |
 
-`MarketSource` 通用接口、历史源、数据集元信息和 CSV API 仍为 P2 设计项。当前模拟源的纯函数与统一帧类型满足 P1，无需提前包装尚无实际复用的来源层。
+Store 按 `PracticeSnapshot` 的格式版本选择模拟或历史纯函数；两种来源共用 `MarketFrame`、成交与账户计算，不增加尚无维护收益的泛化 `MarketSource` 包装层。完整历史数据集由 Store 的私有普通变量持有，响应式快照与页面只得到已推进窗口和元信息；图表不会得到数据集中的未来行情。
 
 当前头快照保存最近行情窗口、全场位置、账户与完整成交，以及当前模型全部随机和隐含状态；较早行情保存在 IndexedDB 的 `historyChunks`，按 `[sessionId, chunkIndex]` 定位。格式版本、分块与窗口容量统一见 [保存规则](03-data-and-trading.md#6-会话保存与恢复)。加载按块验证整个已经发生的历史和账本，最终只保留最近行情窗口；成交展示分页，不通过截断账本限制显示。
 
 日常保存从私有可信验证检查点核对追加行情、源状态和交易变化，基准必须对应同一会话、版本及完整源配置；缓存和验证结果与调用者对象隔离，不能绕过未验证输入的核对。归档块、头快照、账本和当前指针作为一致事务提交，失败保留原块及未保存候选。缓存不进入持久化快照，也不供页面读取，用于避免长练习每次保存都重放全部合成子步。
+
+数据库升级到版本 3，保留原 `sessions`、`settings`、`historyChunks`，新增以数据集标识为键的 `datasets`。历史数据集只追加，重复导入拒绝覆盖；列表逐条校验并返回摘要，选中或恢复时才执行全部报价和指纹校验。历史头快照引用该数据集，不重复归档原行情；恢复先验证完整原数据集，再使用全部已推进报价重建账本并核对头窗口，最终仍只返回最近已推进窗口。保存从私有可信账本检查点验证追加报价，在同一事务核对源记录存在和当前指针版本后提交头快照与指针。共享账本验证器通过既有成交与账户引擎核对持仓、完整成交及资金耗尽规则，没有第二套账户公式。
 
 旧格式经报价、时间、OHLC、进度和完整账本校验后，从最后双边报价初始化当前持续模型。读取时只作内存迁移，第一次后续保存才原子写入保留旧行情的块、头快照与指针；成功前保留原记录。`retainedPrefixKind` 标记旧保留段：版本 1 继续核对固定分钟时序、点差和相邻开收盘约束，版本 2 核对价格结构、锚点和账本；当前生成后缀逐根重演并比较完整状态。不保留或执行旧生成算法，旧保留段的结构和账本校验不构成旧行情来源真实性或防篡改证明。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针仍包含会话标识和 `revision`，事务内拒绝其他窗口已经更新后的陈旧写入。
 
@@ -168,9 +187,13 @@ Vue 操作 ───────► useSessionStore
 
 ## 运行与验证配置
 
-已提供 `dev`、`typecheck`、`test`、`test:e2e`、`check:simulation`、`build`、`start`。开发服务与构建预览均绑定 `127.0.0.1:4173` 并启用严格端口，不能同时运行。`start` 是 Vite 本机构建预览，双击入口留在 P4。
+已提供 `dev`、`typecheck`、`test`、`test:e2e`、`check:simulation`、`check:continuous`、`check:history`、`convert:histdata`、`build`、`start`。开发服务与构建预览均绑定 `127.0.0.1:4173` 并启用严格端口，不能同时运行。`start` 是 Vite 本机构建预览，双击入口留在 P4。
 
 `check:simulation` 调用当前纯模拟源，比较多个固定种子、品种和情景的内部统计及阶段方向规律；不下载历史数据、不连接行情接口。参数仍待合法历史样本校准，脚本通过不等于真实市场特征已复现，也不能证明完全不可预测。
+
+`convert:histdata` 只处理用户已在本机准备的 HistData 文件，转换后保留原始时区、完成分钟语义及转换版本等来源说明，不自动下载行情。CSV 格式、报价类型与样本准备限制统一见 [数据与交易](03-data-and-trading.md)；历史来源、导入、事务和前缀账本由相应单元测试及浏览器流程验证。
+
+`check:history` 核对本机两份样本的文件与内容指纹，逐根推进全部原始分钟，并在隔离的 fake-indexeddb 中验证跨窗口交易、完整恢复、末尾及多窗口冲突。缺少文件时明确失败，不自动下载或修改浏览器数据。
 
 Vitest 执行 `tests/unit/`；Playwright 执行 `tests/e2e/`，默认自动启动固定地址的开发服务并从 `.vite/playwright` 查找 Chromium。设置 `FX_E2E_PREVIEW=1` 时改为自动执行 `npm run start`，用于已构建版本的浏览器回归与完整回放，运行前必须生成 `dist/`。两种模式均拒绝复用现有服务，避免测试错版本或端口冲突。开发下载缓存放在 `.vite/npm-cache`，不成为运行资源。实际安装与检查命令见 [README](../README.md)，检查结果见 [路线与验收](04-roadmap-and-acceptance.md)。
 

@@ -54,7 +54,7 @@ test('无效金额被解释；切换品种保存旧练习并创建独立资金',
     await expect(page.getByRole('button', { name: '买涨（做多）', exact: true })).toBeDisabled()
     await expect(page.locator('#amount-error')).toBeVisible()
   }
-  await page.getByLabel('货币对').selectOption('GBP/USD')
+  await page.getByLabel('货币对', { exact: true }).selectOption('GBP/USD')
   await waitSaved(page)
   const newSnapshot = await readSnapshot(page)
   expect(newSnapshot.id).not.toBe(oldSnapshot.id)

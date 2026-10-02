@@ -8,6 +8,7 @@ import { SessionLoadError } from '../../src/storage/sessionRepository'
 import type { SessionRepository } from '../../src/storage/sessionRepository'
 import { validateSessionSnapshot, validateSessionTransition, SESSION_FRAME_WINDOW_SIZE } from '../../src/storage/sessionSnapshot'
 import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
+import type { PracticeSnapshot } from '../../src/storage/historicalSessionSnapshot'
 import { extendSession, makeLegacySession, makeSession } from './sessionFixture'
 
 function memoryRepository(initial: unknown | null = null) {
@@ -33,11 +34,18 @@ function memoryRepository(initial: unknown | null = null) {
       saved = structuredClone(verified)
     }),
     close: vi.fn(),
+    importDataset: vi.fn(async () => { throw new Error('本测试仓库仅提供模拟练习。') }),
+    listDatasets: vi.fn(async () => []),
+    loadDataset: vi.fn(async () => null),
   }
   return { repository, failSave: () => { rejectNextSave = true }, read: () => saved }
 }
 
 let store: ReturnType<typeof useSessionStore>
+function simulationOnly(snapshot: PracticeSnapshot | null): SessionSnapshot {
+  if (snapshot?.schemaVersion !== 3) throw new Error('预期模拟练习。')
+  return snapshot
+}
 beforeEach(() => {
   setActivePinia(createPinia())
   store = useSessionStore()
@@ -73,7 +81,7 @@ describe('session store', () => {
     await store.initialize()
     expect(store.snapshot).toEqual(previous)
     expect(store.isPlaying).toBe(false)
-    const expected = advanceSimulation(previous!.sourceState)
+    const expected = advanceSimulation(simulationOnly(previous).sourceState)
     await store.next()
     expect(store.currentQuote).toEqual(expected!.frame.quote)
     expect(store.snapshot?.sourceState).toEqual(expected!.state)
@@ -236,7 +244,7 @@ describe('session store', () => {
     expect(store.scenario).toBe('standard')
     expect(memory.read()).toEqual(legacy)
     expect(memory.repository.save).not.toHaveBeenCalled()
-    const expected = advanceSimulation(store.snapshot!.sourceState)!
+    const expected = advanceSimulation(simulationOnly(store.snapshot).sourceState)!
     await store.next()
     expect(store.snapshot?.sourceState).toEqual(expected.state)
     expect(store.snapshot?.revision).toBe(legacy.revision + 1)
@@ -251,7 +259,7 @@ describe('session store', () => {
     expect(store.snapshot).toEqual(saved)
     expect(store.isPlaying).toBe(false)
     await store.next()
-    expect(store.snapshot?.sourceState).toEqual(advanceSimulation(saved!.sourceState)!.state)
+    expect(store.snapshot?.sourceState).toEqual(advanceSimulation(simulationOnly(saved).sourceState)!.state)
   })
 
   it('keeps a damaged old practice intact and available for export instead of replacing it', async () => {
@@ -370,20 +378,20 @@ describe('session store', () => {
     expect(store.isPlaying).toBe(false)
     expect(store.snapshot).toEqual(previous)
     await store.next()
-    expect(store.currentQuote).toEqual(advanceSimulation(previous.sourceState)!.frame.quote)
+    expect(store.currentQuote).toEqual(advanceSimulation(simulationOnly(previous).sourceState)!.frame.quote)
   })
 
   it('excludes the previous seed when a new practice random draw repeats it', async () => {
     const memory = memoryRepository(makeSession())
     store.setRepositoryForTesting(memory.repository)
     await store.initialize()
-    const previous = store.snapshot!.sourceState.seed
+    const previous = simulationOnly(store.snapshot).sourceState.seed
     vi.spyOn(crypto, 'getRandomValues').mockImplementationOnce((array) => {
       if (array instanceof Uint32Array) array[0] = previous
       return array
     })
     await store.startNewSession()
-    expect(store.snapshot?.sourceState.seed).not.toBe(previous)
+    expect(simulationOnly(store.snapshot).sourceState.seed).not.toBe(previous)
     expect(store.snapshot?.sourceState.maxFrames).toBeNull()
     expect(store.progressedFrameCount).toBe(1)
   })
