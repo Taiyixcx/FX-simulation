@@ -4,7 +4,7 @@
 
 P0 的文档和仓库已经建立，P1 基础交易及整页设计已实现、验证并通过 PR 的 squash merge 汇入 `main`。后续按根 [README](../README.md) 的约定保留 `main` 主线，改动使用短期辅助分支交付。业务默认值和公式以 [数据与交易](03-data-and-trading.md) 为准，布局以 [产品与设计](01-product-and-design.md) 为准，模块接口见 [架构](02-architecture.md)。
 
-2026-10-02 在用户指定的 `feature/opt` 完成新一轮实际工作台美化及验证；本轮远端交付尚未完成，不能将前一次 PR 合并记录当作本轮同步证据。
+2026-10-02 在用户指定的 `feature/opt` 完成新一轮实际工作台美化及验证。本轮实现与验证单独记录，不沿用前一次 PR 的同步证据；远端交付通过 PR，实际提交与合并状态以 [GitHub 主线记录](https://github.com/Taiyixcx/FX-simulation/commits/main/) 为准。
 
 | 阶段 | 当前状态 | 交付与依赖 | 可检查的完成条件 |
 | --- | --- | --- | --- |
