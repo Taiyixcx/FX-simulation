@@ -32,11 +32,11 @@ function startNewSession() {
 </template>
 
 <style scoped>
-.scenario-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
-.scenario-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
-.scenario-selection label { color: var(--muted); font-size: .8125rem; }
-.scenario-selection select { min-width: 0; max-width: 100%; min-height: 40px; padding: 7px 26px 7px 10px; border-color: var(--line-strong); border-radius: 6px; font-size: .875rem; background: var(--surface-soft); }
-.new-session { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; font-size: .875rem; padding-inline: .5rem; }
+.scenario-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
+.scenario-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+.scenario-selection label { color: var(--muted); font-size: .8125rem; font-weight: 500; white-space: nowrap; }
+.scenario-selection select { min-width: 7.25rem; max-width: 100%; min-height: 40px; padding: .5rem 2.25rem .5rem .75rem; border-radius: 8px; font-size: .8125rem; font-weight: 500; }
+.new-session { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; font-size: .8125rem; font-weight: 500; padding-inline: .5rem; }
 @media (max-width: 600px) {
   .scenario-selection { flex: 1 1 auto; }
   .scenario-selection select, .new-session { min-height: 44px; }
