@@ -47,6 +47,10 @@ const detailTime = computed(() => detailFrame.value
   : '等待行情')
 const markerPrices = computed(() => markers.value.map(marker => marker.price.toFixed(5)).join(','))
 
+const MARKET_BLUE = '#4267df'
+const BUY_GREEN = '#11765d'
+const SELL_RED = '#b4484d'
+
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let renderedSessionId: string | null = null
@@ -71,7 +75,8 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
   const rightInsetIndex = viewport.value.to - Math.ceil((viewport.value.to - viewport.value.from) * .2)
   const nearRightTimestampMs = viewport.value.to > viewport.value.from
     ? props.frames[rightInsetIndex]?.quote.timestampMs ?? Infinity : Infinity
-  const availablePlotWidth = (chartElement.value?.clientWidth ?? 0) - chartFontSize() * 6.2 - 20
+  const availablePlotWidth = getPlotWidth()
+  const latestPrice = getCurrentPrice()
   // At enlarged text sizes the actual marker already names this same entry price.
   const hasVisibleEntryMarker = visibleMarkers.some(marker => marker.id === `${props.position?.id}-open`)
   const canShowEntryLabel = availablePlotWidth > chartFontSize() * (hasVisibleEntryMarker ? 14 : 8)
@@ -89,7 +94,7 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
         coord: [marker.timestampKey, marker.price],
         value: marker.price,
         symbolRotate: marker.isBuying ? 0 : 180,
-        itemStyle: { color: marker.isBuying ? '#177b67' : '#b34e4a', borderColor: '#fff', borderWidth: 1 },
+        itemStyle: { color: marker.isBuying ? BUY_GREEN : SELL_RED, borderColor: '#fff', borderWidth: 1.5 },
         label: {
           show: visibleMarkers.length <= 6,
           position: marker.isBuying ? 'top' as const : 'bottom' as const,
@@ -97,7 +102,7 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
           offset: marker.timestampMs >= nearRightTimestampMs ? [-10, 0] : [0, 0],
           distance: 8,
           formatter: `${marker.isBuying ? '买' : '卖'} ${formatChartPrice(marker.price)}`,
-          color: marker.isBuying ? '#177b67' : '#b34e4a',
+          color: marker.isBuying ? BUY_GREEN : SELL_RED,
           fontSize: chartFontSize(),
           backgroundColor: '#fff',
           padding: [2, 4],
@@ -111,31 +116,94 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
       // Its default precision of 2 would round an FX entry out of the visible range.
       precision: 5,
       symbol: 'none',
-      lineStyle: { color: props.position?.direction === 'long' ? '#177b67' : '#b34e4a', type: 'dashed' as const, width: 1 },
+      lineStyle: { color: props.position?.direction === 'long' ? BUY_GREEN : SELL_RED, type: 'dashed' as const, width: 1 },
       label: {
         show: canShowEntryLabel,
         position: 'insideStartTop' as const,
         formatter: props.position ? `开仓 ${formatChartPrice(props.position.entryPrice)}` : '',
-        color: props.position?.direction === 'long' ? '#177b67' : '#b34e4a',
+        color: props.position?.direction === 'long' ? BUY_GREEN : SELL_RED,
         fontSize: chartFontSize(),
         backgroundColor: '#fff',
         padding: [2, 4],
       },
-      data: props.position ? [{ yAxis: Number(props.position.entryPrice) }] : [],
+      data: [
+        ...(props.position ? [{ yAxis: Number(props.position.entryPrice) }] : []),
+        ...(latestPrice === null ? [] : [{
+          yAxis: latestPrice,
+          lineStyle: { color: MARKET_BLUE, type: 'dashed' as const, width: 1, opacity: .35 },
+          label: {
+            show: true,
+            position: 'end' as const,
+            distance: 8,
+            formatter: formatChartPrice(latestPrice),
+            color: '#fff',
+            backgroundColor: '#325deb',
+            // ECharts otherwise uses the price reference line's low opacity.
+            opacity: 1,
+            fontSize: chartFontSize(),
+            fontWeight: 600,
+            padding: [4, 6],
+            borderRadius: 4,
+          },
+        }]),
+      ],
     },
   }
   return props.chartType === 'line'
-    ? { ...common, type: 'line', data: linePoints, smooth: false, showSymbol: props.frames.length === 1, symbolSize: 7, lineStyle: { color: '#4263eb', width: 2 }, itemStyle: { color: '#4263eb' }, emphasis: { disabled: true } }
-    : { ...common, type: 'candlestick', data: candlePoints, barMaxWidth: 12, itemStyle: { color: '#177b67', color0: '#b34e4a', borderColor: '#177b67', borderColor0: '#b34e4a' }, emphasis: { disabled: true } }
+    ? { ...common, type: 'line', data: linePoints, smooth: false, showSymbol: props.frames.length === 1, symbolSize: 7, lineStyle: { color: MARKET_BLUE, width: 2 }, areaStyle: { color: '#f3f6fd', opacity: 1 }, itemStyle: { color: MARKET_BLUE }, emphasis: { disabled: true } }
+    : { ...common, type: 'candlestick', data: candlePoints, barMaxWidth: 12, itemStyle: { color: BUY_GREEN, color0: SELL_RED, borderColor: BUY_GREEN, borderColor0: SELL_RED }, emphasis: { disabled: true } }
 }
 
 function chartFontSize(): number {
   return chartElement.value ? Number.parseFloat(getComputedStyle(chartElement.value).fontSize) || 14 : 14
 }
 
+function getChartGrid(): { left: number; right: number; top: number; bottom: number } {
+  const fontSize = chartFontSize()
+  return {
+    left: (chartElement.value?.clientWidth ?? 0) < 500 ? 8 : 20,
+    right: fontSize * 6.5,
+    top: Math.max(20, fontSize),
+    bottom: fontSize * 2.8,
+  }
+}
+
+function getPlotWidth(): number {
+  const grid = getChartGrid()
+  return Math.max(0, (chartElement.value?.clientWidth ?? 0) - grid.left - grid.right)
+}
+
+// The latest quote belongs beside the axis only while its minute is in view.
+function getCurrentPrice(): number | null {
+  return props.frames.length > 0 && viewport.value.to === props.frames.length - 1
+    ? Number(props.frames.at(-1)!.quote.bidPrice) : null
+}
+
+function formatPriceAxisTick(price: number): string {
+  const latestPrice = getCurrentPrice()
+  if (latestPrice !== null) {
+    const grid = getChartGrid()
+    const plotHeight = Math.max(1, (chartElement.value?.clientHeight ?? 0) - grid.top - grid.bottom)
+    const pixelsApart = Math.abs(price - latestPrice) / (priceRange.value.maxValue - priceRange.value.minValue) * plotHeight
+    // Leave room for both a normal tick and the padded current-price badge.
+    if (pixelsApart < chartFontSize() + 10) return ''
+  }
+  return formatChartPrice(price)
+}
+
+function createTimeAxisInterval(): (index: number) => boolean {
+  const visibleCount = viewport.value.to - viewport.value.from + 1
+  const labelCount = Math.max(2, Math.floor(getPlotWidth() / (chartFontSize() * 5.5)))
+  const step = Math.max(1, Math.ceil((visibleCount - 1) / (labelCount - 1)))
+  const firstIndex = viewport.value.from
+  const lastIndex = viewport.value.to
+  return index => index === lastIndex || (index - firstIndex) % step === 0
+}
+
 function viewOption(): EChartsOption {
   return {
-    yAxis: { min: priceRange.value.minValue, max: priceRange.value.maxValue },
+    xAxis: { axisLabel: { interval: createTimeAxisInterval() } },
+    yAxis: { min: priceRange.value.minValue, max: priceRange.value.maxValue, axisLabel: { formatter: formatPriceAxisTick } },
     dataZoom: [{ id: 'market-window', startValue: viewport.value.from, endValue: viewport.value.to }],
   }
 }
@@ -200,7 +268,7 @@ function syncChart(): void {
   updatePriceRange()
   chart.setOption({
     ...viewOption(),
-    xAxis: { data: timestampKeys },
+    xAxis: { data: timestampKeys, axisLabel: { interval: createTimeAxisInterval() } },
     series: [createSeries()],
   }, { replaceMerge: isTypeChanged ? ['series'] : undefined })
   renderedSessionId = props.sessionId
@@ -247,9 +315,9 @@ function resizeChart(): void {
   const fontSize = chartFontSize()
   chart.setOption({
     textStyle: { fontSize },
-    grid: { left: chartElement.value.clientWidth < 500 ? 8 : 20, right: fontSize * 6.2, top: 20, bottom: fontSize * 2.6 },
-    xAxis: { axisLabel: { fontSize }, axisPointer: { label: { fontSize } } },
-    yAxis: { axisLabel: { fontSize }, axisPointer: { label: { fontSize } } },
+    grid: getChartGrid(),
+    xAxis: { axisLabel: { fontSize, interval: createTimeAxisInterval() }, axisPointer: { label: { fontSize } } },
+    yAxis: { axisLabel: { fontSize, formatter: formatPriceAxisTick }, axisPointer: { label: { fontSize } } },
     series: [createSeries()],
   })
 }
@@ -260,20 +328,20 @@ onMounted(() => {
   instanceId.value = chart.id
   chart.setOption({
     animation: false,
-    textStyle: { fontFamily: 'Inter, "Microsoft YaHei", system-ui, sans-serif', fontSize: chartFontSize(), color: '#637188' },
-    grid: { left: 20, right: 87, top: 20, bottom: 36 },
+    textStyle: { fontFamily: 'Inter, "Microsoft YaHei", system-ui, sans-serif', fontSize: chartFontSize(), color: '#667085' },
+    grid: getChartGrid(),
     tooltip: {
       trigger: 'axis',
       showContent: false,
-      axisPointer: { type: 'cross', lineStyle: { color: '#a3b0c5', type: 'dashed' }, crossStyle: { color: '#a3b0c5', type: 'dashed' }, label: { backgroundColor: '#637188' } },
+      axisPointer: { type: 'cross', lineStyle: { color: '#98a2b3', type: 'dashed' }, crossStyle: { color: '#98a2b3', type: 'dashed' }, label: { backgroundColor: '#475467' } },
     },
     xAxis: {
       type: 'category',
       boundaryGap: true,
       data: [],
-      axisLine: { lineStyle: { color: '#e7ecf3' } },
+      axisLine: { lineStyle: { color: '#edf0f4' } },
       axisTick: { show: false },
-      axisLabel: { color: '#7a879a', margin: 14, hideOverlap: true, formatter: formatTimeAxisTick },
+      axisLabel: { color: '#667085', margin: 14, hideOverlap: true, formatter: formatTimeAxisTick },
       splitLine: { show: false },
       axisPointer: { label: { formatter: (params: { value: unknown }) => formatTimeAxisTick(String(params.value)) } },
     },
@@ -284,8 +352,8 @@ onMounted(() => {
       splitNumber: 4,
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: '#7a879a', margin: 12, formatter: (price: number) => formatChartPrice(price) },
-      splitLine: { lineStyle: { color: '#edf1f6', width: 1 } },
+      axisLabel: { color: '#667085', margin: 12, hideOverlap: true, formatter: formatPriceAxisTick },
+      splitLine: { lineStyle: { color: '#edf0f4', width: 1 } },
       axisPointer: { label: { formatter: (params: { value: unknown }) => formatChartPrice(Number(params.value)) } },
     },
     dataZoom: [{
@@ -378,20 +446,21 @@ onBeforeUnmount(() => {
 .chart-details { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 0 0; min-height: 3.25rem; }
 .chart-readout { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; color: var(--muted); font-size: .875rem; }
 .chart-time { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.chart-mode { color: var(--text); font-weight: 500; margin-right: 2px; }
-.timezone { color: #7a879a; }
+.chart-mode { color: var(--text); font-weight: 600; margin-right: 2px; }
+.timezone { color: var(--muted); }
 .ohlc-readout { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--text); }
 .hover-price { color: var(--text); }
-.latest-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 0 0 auto; min-height: 2rem; padding: 4px 8px; font-size: .875rem; }
+.latest-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 0 0 auto; min-height: 2.5rem; padding: 6px 10px; font-size: .875rem; }
 .latest-button.is-following { color: var(--blue); }
 .chart-stage { position: relative; }
-.chart-canvas { width: 100%; height: 24.375rem; font-size: .875rem; touch-action: pan-y; }
+.chart-canvas { width: 100%; height: 21.875rem; font-size: .875rem; touch-action: pan-y; }
 .chart-canvas:focus-visible { outline-offset: -3px; }
 .initial-state { position: absolute; bottom: 3.5rem; left: 24px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .875rem; pointer-events: none; }
-.initial-dot { width: 6px; height: 6px; border-radius: 50%; background: #a3b0c5; }
+.initial-dot { width: 6px; height: 6px; border-radius: 50%; background: #98a2b3; }
 @media (max-width: 600px) {
   .chart-details { flex-wrap: wrap; padding: 8px 0 0; gap: 4px 12px; }
-  .chart-canvas { height: 20.625rem; }
+  .latest-button { min-width: 44px; min-height: 44px; }
+  .chart-canvas { height: 18.75rem; }
   .initial-state { left: 16px; }
 }
 </style>

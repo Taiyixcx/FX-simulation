@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FX 练习室 · 整体设计样稿</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-size: 16px; line-height: 1.5; font-synthesis: none;
+      color: #18212e; background: #f3f4f6;
+      --ink: #18212e; --muted: #667085; --line: #e4e7ec; --soft: #f7f8fa;
+      --blue: #325deb; --blue-soft: #edf2ff; --green: #11765d; --green-soft: #eaf5f0;
+      --red: #b4484d; --red-soft: #fff0ef;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; }
+    h1,h2,h3,p { margin: 0; }
+    button,input,select { font: inherit; color: inherit; }
+    button,a,input,select { -webkit-tap-highlight-color: transparent; }
+    button { cursor: pointer; }
+    button { border: 1px solid transparent; background: transparent; border-radius: 7px; min-height: 40px; padding: 8px 12px; font-size: .875rem; font-weight: 600; transition: background-color 140ms, border-color 140ms, color 140ms, transform 80ms; }
+    button:hover:not(:disabled) { background: #eceff4; }
+    button:active:not(:disabled) { transform: scale(.985); }
+    button:disabled { opacity: .48; cursor: default; }
+    :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+    a { color: var(--blue); text-underline-offset: 3px; }
+    .icon { display: inline-block; width: 18px; height: 18px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+    .number { font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted); }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .preview-bar { max-width: 1488px; margin: 16px auto 12px; padding: 0 24px; display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; justify-content: space-between; color: var(--muted); font-size: .8125rem; }
+    .preview-label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .preview-label strong { color: var(--ink); font-weight: 600; }
+    .scenario-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+    .scenario-switch button { min-height: 32px; padding: 4px 10px; font-size: .8125rem; font-weight: 500; }
+    .scenario-switch button[aria-pressed="true"] { background: #e2e8f8; color: #2545b0; }
+    .workspace { max-width: 1440px; margin: 0 auto 24px; background: white; border: 1px solid var(--line); border-radius: 12px; overflow: clip; }
+    .workspace-header { min-height: 72px; padding: 16px 28px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; background: var(--ink); color: white; border-radius: 7px; font-size: .875rem; font-weight: 700; letter-spacing: -.04em; }
+    h1 { font-size: 1.0625rem; font-weight: 650; letter-spacing: -.02em; }
+    .workspace-title { border-left: 1px solid var(--line); padding-left: 20px; margin-left: 8px; color: var(--muted); font-size: .875rem; }
+    .header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+    .saved-status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .8125rem; }
+    .saved-status .icon { color: var(--green); width: 15px; height: 15px; }
+    .saved-status.negative, .saved-status.negative .icon { color: var(--red); }
+    .header-link { color: var(--muted); font-size: .875rem; text-decoration: none; display: flex; align-items: center; gap: 6px; min-height: 40px; }
+    .account-strip { padding: 22px 28px; display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr 1.1fr; align-items: center; gap: 24px; border-bottom: 1px solid var(--line); }
+    .metric { min-width: 0; }
+    .metric-label { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: .875rem; color: var(--muted); }
+    .metric-label .icon { width: 14px; height: 14px; }
+    .metric-number { font-size: 1.25rem; line-height: 1.3; font-weight: 550; letter-spacing: -.03em; white-space: nowrap; }
+    .metric-number small { font-size: .75rem; font-weight: 400; color: var(--muted); letter-spacing: 0; margin-left: 5px; }
+    .metric-primary .metric-number { font-size: 2rem; font-weight: 600; }
+    .metric-pnl { padding-left: 22px; border-left: 1px solid var(--line); }
+    .metric-pnl .metric-number { font-size: 1.5rem; }
+    .pnl-word { font-size: .75rem; font-weight: 500; display: inline-block; margin-bottom: 4px; }
+    .trading-grid { display: grid; grid-template-columns: minmax(0,1fr) 312px; }
+    .market-panel { padding: 24px 28px 20px; min-width: 0; }
+    .market-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; }
+    .market-identity { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .pair-mark { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 50%; background: var(--soft); font-size: 1.0625rem; color: #42516b; letter-spacing: -.08em; }
+    .pair-select { display: flex; align-items: center; gap: 4px; font-size: 1.125rem; font-weight: 650; padding: 3px 0; border: 0; background: none; min-height: 38px; cursor: pointer; }
+    .source-badge { font-size: .8125rem; color: #53647e; padding: 4px 8px; background: var(--soft); border-radius: 5px; white-space: nowrap; }
+    .market-actions { display: flex; gap: 12px; align-items: center; }
+    .segmented { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); background: var(--soft); border-radius: 8px; }
+    .segmented button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 4px 9px; font-size: .8125rem; font-weight: 500; }
+    .segmented button[aria-pressed="true"] { color: var(--blue); background: white; box-shadow: 0 1px 3px #18212e12; }
+    .new-session { color: var(--muted); display: flex; align-items: center; gap: 6px; padding-inline: 6px; }
+    .quote-row { display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center; margin-top: 22px; }
+    .main-quote { display: grid; gap: 4px; }
+    .quote-label { font-size: .8125rem; color: var(--muted); }
+    .main-price { font-size: 2.5rem; font-weight: 550; line-height: 1.15; letter-spacing: -.04em; }
+    .main-price .price-tail { color: var(--blue); }
+    .secondary-quote { border-left: 1px solid var(--line); padding-left: 24px; display: grid; gap: 5px; }
+    .secondary-price { font-size: 1.375rem; font-weight: 550; letter-spacing: -.02em; }
+    .spread-label { font-size: .8125rem; color: var(--muted); }
+    .spread-number { font-size: .9375rem; font-weight: 500; }
+    .quote-note { font-size: .8125rem; color: var(--muted); margin-left: auto; }
+    .chart-readout { margin: 18px 0 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; font-size: .8125rem; color: var(--muted); }
+    .chart-readout strong { color: var(--ink); font-weight: 500; margin-right: 8px; }
+    .chart-stage { position: relative; margin-top: 8px; }
+    .market-chart { display: block; width: 100%; height: 340px; overflow: visible; }
+    .chart-latest { color: var(--blue); font-size: .8125rem; min-height: 32px; padding: 4px 8px; display: flex; align-items: center; gap: 5px; }
+    .chart-caption { position: absolute; bottom: 44px; left: 12px; font-size: .8125rem; color: var(--muted); }
+    .replay { padding-top: 14px; border-top: 1px solid var(--line); }
+    .replay-toolbar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; }
+    .replay-actions { display: flex; align-items: center; gap: 6px; }
+    .play-button { display: flex; justify-content: center; align-items: center; gap: 7px; min-width: 88px; background: var(--blue); color: white; border-color: var(--blue); }
+    .play-button:hover:not(:disabled) { background: #254dce; }
+    .step-button { display: flex; align-items: center; gap: 7px; border-color: var(--line); }
+    .speed-control { display: flex; align-items: center; gap: 8px; font-size: .8125rem; color: var(--muted); }
+    .speed-control select { min-height: 40px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: .8125rem; }
+    .replay-progress { font-size: .8125rem; color: var(--muted); margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+    .progress-track { margin-top: 14px; height: 3px; background: #eef0f4; overflow: hidden; border-radius: 1px; }
+    .progress-fill { width: 25%; height: 100%; background: var(--blue); transition: width 100ms linear; }
+    .trade-panel { border-left: 1px solid var(--line); padding: 24px 22px 20px; background: #fbfcfd; min-width: 0; }
+    .section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    h2 { font-size: 1rem; font-weight: 650; }
+    .quiet-badge { color: var(--muted); font-size: .75rem; }
+    .amount-label { display: flex; align-items: center; gap: 6px; font-size: .875rem; margin-top: 22px; margin-bottom: 9px; }
+    .help-button { display: inline-flex; align-items: center; justify-content: center; min-height: 24px; min-width: 24px; padding: 2px; color: var(--muted); }
+    .help-button .icon { width: 15px; height: 15px; }
+    .amount-field { display: flex; align-items: center; padding: 12px 14px; min-height: 58px; border: 1px solid #d4dbe5; background: white; border-radius: 7px; transition: border-color 140ms; }
+    .amount-field:focus-within { border-color: var(--blue); }
+    .amount-field:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 3px; }
+    .amount-field input { min-width: 0; width: 100%; border: 0; outline: 0; padding: 0; font-size: 1.5rem; font-weight: 550; background: transparent; font-variant-numeric: tabular-nums; }
+    .amount-field span { font-size: .8125rem; color: var(--muted); }
+    .amount-presets { display: flex; gap: 6px; margin-top: 8px; }
+    .amount-presets button { flex: 1; min-height: 34px; font-size: .8125rem; padding: 5px 4px; font-weight: 500; color: var(--muted); border-color: var(--line); background: white; }
+    .amount-presets button[aria-pressed="true"] { color: var(--blue); border-color: #b5c5f6; background: var(--blue-soft); }
+    .trade-context { display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; color: var(--muted); font-size: .8125rem; margin-top: 12px; }
+    .trade-directions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; }
+    .direction-button { display: grid; gap: 5px; justify-items: center; min-height: 74px; padding: 10px 7px; border-width: 1px; }
+    .direction-title { display: flex; align-items: center; gap: 3px; font-size: .875rem; }
+    .direction-price { font-size: .75rem; font-weight: 500; }
+    .buy-long { color: var(--green); background: var(--green-soft); border-color: #b9ddcf; }
+    .buy-long:hover:not(:disabled) { background: #dceee5; border-color: var(--green); }
+    .buy-short { color: var(--red); background: var(--red-soft); border-color: #f0c9c7; }
+    .buy-short:hover:not(:disabled) { background: #fbe0dd; border-color: var(--red); }
+    .direction-reason { margin-top: 8px; font-size: .8125rem; color: var(--muted); }
+    .position-section { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+    .direction-tag { display: inline-flex; align-items: center; gap: 4px; color: var(--green); font-size: .75rem; font-weight: 500; }
+    .position-summary { margin-top: 14px; border-left: 2px solid var(--green); padding-left: 12px; }
+    .position-summary .metric-label { font-size: .8125rem; margin-bottom: 2px; }
+    .position-pnl { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 2rem; font-weight: 550; letter-spacing: -.04em; line-height: 1.3; }
+    .position-pnl small { font-size: .8125rem; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+    .position-details { display: grid; gap: 8px; margin: 16px 0; font-size: .8125rem; }
+    .position-details div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+    .position-details dt { color: var(--muted); }
+    .position-details dd { margin: 0; }
+    .close-button { width: 100%; min-height: 42px; background: var(--ink); color: white; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .close-button:hover:not(:disabled) { background: #303d51; }
+    .position-empty { padding: 24px 0; display: grid; gap: 5px; text-align: center; }
+    .position-empty .icon { margin: 0 auto 6px; color: #768399; width: 22px; height: 22px; }
+    .position-empty strong { font-size: .875rem; font-weight: 500; }
+    .position-empty p { color: var(--muted); font-size: .8125rem; }
+    .trade-feedback { min-height: 20px; margin-top: 10px; font-size: .8125rem; color: var(--muted); overflow-wrap: anywhere; }
+    .journal { padding: 22px 28px 24px; border-top: 1px solid var(--line); }
+    .journal-title { display: flex; gap: 8px; align-items: center; }
+    .count { font-size: .75rem; color: var(--muted); background: var(--soft); border-radius: 4px; padding: 1px 6px; }
+    .empty-journal { display: flex; align-items: center; gap: 12px; padding: 24px 0 6px; font-size: .875rem; }
+    .empty-journal .icon { color: #7e8b9e; }
+    .empty-journal p { color: var(--muted); font-size: .8125rem; margin-top: 3px; }
+    .table-scroll { overflow-x: auto; margin-top: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: .8125rem; text-align: left; white-space: nowrap; }
+    th,td { padding: 12px 10px; border-bottom: 1px solid var(--line); }
+    th { font-weight: 500; color: var(--muted); background: var(--soft); }
+    td { height: 50px; }
+    tbody tr:hover { background: var(--soft); }
+    .numeric { text-align: right; }
+    .mobile-trade { display: none; margin-top: 16px; }
+    .mobile-trade summary { min-height: 56px; padding: 12px 0; cursor: pointer; }
+    .mobile-trade summary strong { margin-left: 12px; font-weight: 550; }
+    .mobile-trade .position-details { padding-bottom: 4px; }
+    .error-banner { padding: 14px 28px; background: var(--red-soft); border-bottom: 1px solid #f0c9c7; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; color: var(--red); }
+    .error-banner p { font-size: .875rem; max-width: 62em; }
+    .error-banner button { background: white; border-color: #e4b5b3; }
+    dialog { width: min(440px, calc(100% - 32px)); border: 1px solid var(--line); border-radius: 10px; padding: 24px; color: var(--ink); box-shadow: 0 12px 36px #18212e20; }
+    dialog::backdrop { background: #18212e35; }
+    dialog h2 { margin-bottom: 12px; }
+    dialog p { font-size: .875rem; color: var(--muted); line-height: 1.8; }
+    dialog button { display: block; margin: 18px 0 0 auto; background: var(--blue); color: white; }
+    dialog button:hover { background: #254dce; }
+    .preview-footer { max-width: 1440px; margin: 0 auto 24px; padding: 0 24px; font-size: .8125rem; color: var(--muted); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 1490px) { .workspace { margin-inline: 24px; } }
+    @media (max-width: 1150px) {
+      .trading-grid { grid-template-columns: minmax(0,1fr) 288px; }
+      .market-panel { padding-inline: 22px; }
+      .account-strip { gap: 16px; }
+      .metric-primary .metric-number { font-size: 1.75rem; }
+      .metric-number { font-size: 1.125rem; }
+      .quote-note { display: none; }
+    }
+    @media (max-width: 960px) {
+      .trading-grid { grid-template-columns: 1fr; }
+      .trade-panel { border-left: 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 24px; }
+      .position-section { margin-top: 0; border-top: 0; border-left: 1px solid var(--line); padding: 0 0 0 24px; }
+      .account-strip { grid-template-columns: 1.4fr 1fr 1fr; gap: 20px; }
+      .metric-pnl { border-left: 0; padding-left: 0; }
+    }
+    @media (max-width: 600px) {
+      .preview-bar { margin-top: 12px; padding: 0 16px; }
+      .preview-label span { flex-basis: 100%; }
+      .workspace { margin-inline: 0; border-radius: 0; border-inline: 0; }
+      .workspace-header { padding: 14px 16px; gap: 8px 12px; }
+      .brand { gap: 8px; }
+      .workspace-title, .header-link { display: none; }
+      .header-actions { gap: 0; }
+      .saved-status { font-size: .75rem; }
+      .account-strip { padding: 18px 16px; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
+      .metric-primary { grid-column: 1 / -1; }
+      .metric-primary .metric-number { font-size: 2rem; }
+      .metric-pnl .metric-number { font-size: 1.25rem; }
+      .market-panel { padding: 20px 16px; }
+      .market-identity { gap: 8px; }
+      .pair-mark { width: 32px; height: 32px; }
+      .market-actions { flex: 1 1 100%; justify-content: space-between; }
+      .quote-row { gap: 12px 20px; }
+      .main-price { font-size: 2.25rem; }
+      .secondary-quote { padding-left: 16px; }
+      .main-quote, .secondary-quote { min-width: 0; }
+      .chart-readout { margin-top: 14px; }
+      .market-chart { height: 280px; }
+      .replay-progress { flex-basis: 100%; margin-left: 0; }
+      .trade-panel { display: block; padding: 22px 16px; }
+      .trade-directions { margin-top: 14px; }
+      .position-section { border-left: 0; border-top: 1px solid var(--line); margin-top: 22px; padding: 20px 0 0; }
+      .journal { padding: 22px 16px; }
+      .table-scroll { display: none; }
+      .mobile-trade { display: block; }
+      .error-banner { padding-inline: 16px; }
+      .preview-footer { padding: 0 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *,*::before,*::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+      button:active:not(:disabled) { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <defs>
+      <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4 10-10"/></symbol>
+      <symbol id="play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+      <symbol id="pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+      <symbol id="step" viewBox="0 0 24 24"><path d="m5 6 10 6-10 6ZM19 5v14"/></symbol>
+      <symbol id="line" viewBox="0 0 24 24"><path d="M4 4v16h16M7 15l4-5 4 2 5-7"/></symbol>
+      <symbol id="candle" viewBox="0 0 24 24"><path d="M7 3v4m0 8v6m10-18v8m0 7v3M4 7h6v8H4ZM14 11h6v7h-6Z"/></symbol>
+      <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></symbol>
+      <symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+      <symbol id="up" viewBox="0 0 24 24"><path d="m5 18 13-13M7 5h11v11"/></symbol>
+      <symbol id="down" viewBox="0 0 24 24"><path d="m5 6 13 13M7 19h11V8"/></symbol>
+      <symbol id="icon-journal" viewBox="0 0 24 24"><path d="M6 4h14v16H6ZM3 8h6M3 16h6M12 9h4M12 14h4"/></symbol>
+    </defs>
+  </svg>
+  <div class="preview-bar">
+    <div class="preview-label"><strong>整体设计样稿</strong><span>示例数据 · 控件仅演示视觉，不执行交易或保存练习</span></div>
+    <div class="scenario-switch" role="group" aria-label="设计场景">
+      <button data-scenario="position" aria-pressed="true">持仓示例</button>
+      <button data-scenario="initial" aria-pressed="false">初次进入</button>
+      <button data-scenario="closed" aria-pressed="false">已平仓</button>
+      <button data-scenario="error" aria-pressed="false">保存失败</button>
+    </div>
+  </div>
+  <main class="workspace">
+    <header class="workspace-header">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">FX</span><h1>FX 练习室</h1><span class="workspace-title">交易工作台</span></div>
+      <div class="header-actions"><a class="header-link" href="#journal"><svg class="icon" aria-hidden="true"><use href="#icon-journal"/></svg>成交记录</a><span class="saved-status" id="save-status"><svg class="icon" aria-hidden="true"><use href="#check"/></svg><span>已保存到本机</span></span></div>
+    </header>
+    <section class="error-banner" id="error-banner" aria-label="保存异常" hidden><p>保存失败，行情与交易已暂停。当前窗口的练习仍保留，请重试或导出当前快照。</p><button id="retry-save">重试保存</button><button id="export-demo">导出当前快照</button></section>
+    <section class="account-strip" aria-label="练习账户">
+      <div class="metric metric-primary"><p class="metric-label">账户权益<button class="help-button" data-help="equity" aria-label="账户权益说明"><svg class="icon" aria-hidden="true"><use href="#info"/></svg></button></p><p class="metric-number number"><span id="equity">10,003.71</span><small>USD</small></p></div>
+      <div class="metric"><p class="metric-label">账户余额</p><p class="metric-number number"><span id="balance">10,000.00</span><small>USD</small></p></div>
+      <div class="metric"><p class="metric-label">可用资金</p><p class="metric-number number"><span id="available">9,003.71</span><small>USD</small></p></div>
+      <div class="metric"><p class="metric-label">资金占用</p><p class="metric-number number"><span id="margin">1,000.00</span><small>USD</small></p></div>
+      <div class="metric metric-pnl"><p class="metric-label">持仓盈亏</p><p class="metric-number number positive" id="account-pnl">+3.71<small>USD</small></p></div>
+    </section>
+    <div class="trading-grid">
+      <section class="market-panel" aria-label="行情与回放">
+        <div class="market-toolbar">
+          <div class="market-identity"><span class="pair-mark" aria-hidden="true">€$</span><label for="currency-pair" class="sr-only">货币对</label><select class="pair-select" id="currency-pair"><option>EUR/USD</option><option>GBP/USD</option></select><span class="source-badge">模拟 · 1 分钟</span></div>
+          <div class="market-actions"><div class="segmented" role="group" aria-label="图表类型"><button data-chart="line" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#line"/></svg>折线</button><button data-chart="candlestick" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#candle"/></svg>K 线</button></div><button class="new-session" id="new-session"><svg class="icon" aria-hidden="true"><use href="#plus"/></svg>新练习</button></div>
+        </div>
+        <div class="quote-row number"><div class="main-quote"><span class="quote-label">卖出价 · Bid</span><strong class="main-price" id="bid">1.086<span class="price-tail">42</span></strong></div><div class="secondary-quote"><span class="quote-label">买入价 · Ask</span><strong class="secondary-price" id="ask">1.08652</strong></div><div><p class="spread-label">点差<button class="help-button" data-help="spread" aria-label="点差说明"><svg class="icon" aria-hidden="true"><use href="#info"/></svg></button></p><p class="spread-number">1.0 <span class="muted">pip</span></p></div><span class="quote-note">当前可见报价</span></div>
+        <div class="chart-readout number"><span><strong>最新</strong><span id="quote-time">2024/03/04 14:00</span> · UTC+8 <span id="ohlc" hidden> · 开 1.08630 / 高 1.08660 / 低 1.08618 / 收 1.08642</span></span><button class="chart-latest" id="latest-button"><svg class="icon" aria-hidden="true"><use href="#arrow"/></svg>回到最新</button></div>
+        <div class="chart-stage"><svg class="market-chart" id="chart" role="img" aria-label="人工构造的示例 Bid 走势图，非真实历史行情" viewBox="0 0 950 340" preserveAspectRatio="none"></svg><span class="chart-caption" id="chart-caption" hidden>首根行情 · 点击“播放”或“下一根”开始观察</span></div>
+        <div class="replay"><div class="replay-toolbar"><div class="replay-actions"><button class="play-button" id="play-button" aria-label="播放"><svg class="icon" aria-hidden="true"><use href="#play"/></svg><span>播放</span></button><button class="step-button" id="step-button"><svg class="icon" aria-hidden="true"><use href="#step"/></svg>下一根</button></div><label class="speed-control">速度<select id="speed" aria-label="速度"><option>1 根/秒</option><option>5 根/秒</option><option>10 根/秒</option></select></label><span class="replay-progress number"><span id="frame-count">360 / 1440 根</span><span id="playback-state">已暂停</span></span></div><div class="progress-track" role="progressbar" aria-label="示例回放进度" aria-valuemin="0" aria-valuemax="1440" aria-valuenow="360"><div class="progress-fill" id="progress-fill"></div></div></div>
+      </section>
+      <aside class="trade-panel" aria-label="交易与持仓">
+        <section><div class="section-heading"><h2>下单</h2><span class="quiet-badge">市价成交</span></div><div class="amount-label"><label for="trade-amount">交易金额</label><button class="help-button" data-help="amount" aria-label="交易金额说明"><svg class="icon" aria-hidden="true"><use href="#info"/></svg></button></div><div class="amount-field"><input id="trade-amount" type="text" inputmode="decimal" value="1000" aria-describedby="amount-caption"><span>USD</span></div><div class="amount-presets" role="group" aria-label="快捷金额"><button data-amount="100" aria-pressed="false">100</button><button data-amount="500" aria-pressed="false">500</button><button data-amount="1000" aria-pressed="true">1,000</button></div><p class="trade-context" id="amount-caption"><span>训练资金占用</span><span>1,000.00 USD · 示例</span></p><div class="trade-directions"><button class="direction-button buy-long" id="buy-long" aria-label="买涨（做多）"><span class="direction-title"><svg class="icon" aria-hidden="true"><use href="#up"/></svg>买涨 · 做多</span><span class="direction-price number">Ask <span id="long-price">1.08652</span></span></button><button class="direction-button buy-short" id="buy-short" aria-label="买跌（做空）"><span class="direction-title"><svg class="icon" aria-hidden="true"><use href="#down"/></svg>买跌 · 做空</span><span class="direction-price number">Bid <span id="short-price">1.08642</span></span></button></div><p class="direction-reason" id="direction-reason">当前已有持仓，请先平仓</p></section>
+        <section class="position-section"><div class="section-heading"><h2>当前持仓</h2><span class="direction-tag" id="position-direction"><svg class="icon" aria-hidden="true"><use href="#up"/></svg>买涨 · 做多</span></div><div id="position-content"><div class="position-summary"><p class="metric-label">浮动盈利</p><p class="position-pnl number positive">+3.71 <small>USD</small></p></div><dl class="position-details number"><div><dt>交易金额</dt><dd>1,000.00 USD</dd></div><div><dt>开仓价</dt><dd>1.08240</dd></div><div><dt>开仓时间</dt><dd>09:12 · UTC+8</dd></div></dl><button class="close-button" id="close-position">平仓<svg class="icon" aria-hidden="true"><use href="#arrow"/></svg></button></div><div class="position-empty" id="position-empty" hidden><svg class="icon" aria-hidden="true"><use href="#line"/></svg><strong>暂无持仓</strong><p>选择方向，开始这次练习</p></div><p class="trade-feedback" id="trade-feedback" role="status"></p></section>
+      </aside>
+    </div>
+    <section class="journal" id="journal" aria-labelledby="journal-title"><div class="section-heading"><div class="journal-title"><h2 id="journal-title">成交记录</h2><span class="count number" id="trade-count">0</span></div><span class="quiet-badge">本次练习 · 已平仓</span></div><div class="empty-journal" id="empty-journal"><svg class="icon" aria-hidden="true"><use href="#icon-journal"/></svg><div><strong>还没有已平仓的交易</strong><p>平仓后，在这里查看成交价与盈亏。</p></div></div><div class="table-scroll" id="journal-table" hidden><table aria-label="本次练习成交记录"><thead><tr><th scope="col">方向</th><th scope="col" class="numeric">交易金额</th><th scope="col" class="numeric">开仓价</th><th scope="col" class="numeric">平仓价</th><th scope="col" class="numeric">已结算盈亏</th><th scope="col">开仓时间</th><th scope="col">平仓时间</th><th scope="col">原因</th></tr></thead><tbody><tr><td><span class="direction-tag">↗ 买涨 · 做多</span></td><td class="numeric number">1,000.00 USD</td><td class="numeric number">1.08240</td><td class="numeric number">1.08642</td><td class="numeric number positive">盈利 +3.71 USD</td><td class="number muted">03/04 09:12</td><td class="number muted">03/04 14:00</td><td class="muted">手动平仓</td></tr></tbody></table></div><details class="mobile-trade" id="mobile-trade" hidden><summary><span class="direction-tag">↗ 买涨 · 做多</span><strong class="number positive">盈利 +3.71 USD</strong> <span class="muted">⌄</span></summary><dl class="position-details number"><div><dt>交易金额</dt><dd>1,000.00 USD</dd></div><div><dt>开仓价 / 平仓价</dt><dd>1.08240 / 1.08642</dd></div><div><dt>开仓 / 平仓时间</dt><dd>09:12 / 14:00 · UTC+8</dd></div><div><dt>平仓原因</dt><dd>手动平仓</dd></div></dl></details></section>
+  </main>
+  <div class="preview-footer"><span id="preview-feedback" role="status">当前为持仓示例。可切换场景、图表类型、快捷金额，或打开术语说明。</span><span>样稿使用系统字体 · 图表为原创示意 SVG</span></div>
+  <dialog id="help-dialog" aria-labelledby="help-title" aria-describedby="help-content"><h2 id="help-title"></h2><p id="help-content"></p><button id="close-help">知道了</button></dialog>
+  <script>
+    // 独立视觉样稿：没有交易引擎、持久化、网络请求或第三方运行资源。
+    const byId = id => document.getElementById(id);
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    let scenario = 'position';
+    let chartType = 'line';
+    let isPlaying = false;
+    let helpTrigger = null;
+    const examplePrices = Array.from({length: 96}, (_, i) =>
+      1.08290 + i * .000037 - Math.sin(i * .7) * .00014 - Math.sin(i * 1.93) * .00008 - Math.sin(i * .13) * .00035,
+    );
+    examplePrices[95] = 1.08642;
+    function drawElement(name, attributes, text) {
+      const element = document.createElementNS(svgNamespace, name);
+      for (const [key, attribute] of Object.entries(attributes)) element.setAttribute(key, String(attribute));
+      if (text !== undefined) element.textContent = text;
+      byId('chart').append(element);
+      return element;
+    }
+    function drawChart() {
+      byId('chart').replaceChildren();
+      const width = Math.max(280, byId('chart').clientWidth);
+      const height = byId('chart').clientHeight;
+      const plotRight = width - 82;
+      const plotBottom = height - 40;
+      const isInitial = scenario === 'initial';
+      const maximumPrice = isInitial ? 1.08510 : 1.08700;
+      const minimumPrice = isInitial ? 1.08450 : 1.08200;
+      const priceToY = price => 20 + (maximumPrice - price) / (maximumPrice - minimumPrice) * (plotBottom - 20);
+      byId('chart').setAttribute('viewBox', `0 0 ${width} ${height}`);
+      const examplePoints = examplePrices.map((price, i) => ({x: 12 + i / 95 * (plotRight - 26), y: priceToY(price)}));
+      const axisPrices = Array.from({length: 6}, (_, i) => (maximumPrice - i * (maximumPrice - minimumPrice) / 5).toFixed(5));
+      axisPrices.forEach((price, i) => {
+        const y = 20 + i * (plotBottom - 20) / 5;
+        drawElement('line', {x1: 12, x2: plotRight, y1: y, y2: y, stroke: '#edf0f4', 'stroke-width': 1});
+        drawElement('text', {x: plotRight + 12, y: y + 4, fill: '#667085', 'font-size': 12}, price);
+      });
+      const axisTimes = width < 500 ? ['08:00','11:00','14:00'] : ['08:00','09:12','10:24','11:36','12:48','14:00'];
+      if (isInitial) {
+        drawElement('text', {x: plotRight / 2, y: height - 10, fill: '#667085', 'font-size': 12, 'text-anchor': 'middle'}, '08:01');
+        drawElement('circle', {cx: plotRight / 2, cy: priceToY(1.08480), r: 4, fill: '#325deb'});
+        return;
+      }
+      axisTimes.forEach((time, i) => drawElement('text', {x: 12 + i / (axisTimes.length - 1) * (plotRight - 26), y: height - 10, fill: '#667085', 'font-size': 12, 'text-anchor': i === 0 ? 'start' : i === axisTimes.length - 1 ? 'end' : 'middle'}, time));
+      if (chartType === 'line') {
+        const path = examplePoints.map((point, i) => `${i ? 'L' : 'M'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ');
+        drawElement('path', {d: `${path} L ${plotRight - 14} ${plotBottom} L 12 ${plotBottom} Z`, fill: '#f3f6fd'});
+        drawElement('path', {d: path, fill: 'none', stroke: '#4267df', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'});
+      } else {
+        examplePoints.forEach((point, i) => {
+          const openY = i ? examplePoints[i-1].y : point.y + 5;
+          const isRising = point.y <= openY;
+          const candleColor = isRising ? '#11765d' : '#b4484d';
+          drawElement('line', {x1: point.x, x2: point.x, y1: Math.min(openY, point.y) - 5 - i % 5, y2: Math.max(openY, point.y) + 5 + i % 4, stroke: candleColor, 'stroke-width': 1});
+          const candleWidth = Math.max(1, Math.min(5.6, (plotRight - 26) / 96 * .65));
+          drawElement('rect', {x: point.x - candleWidth / 2, y: Math.min(openY, point.y), width: candleWidth, height: Math.max(1.5, Math.abs(openY-point.y)), fill: isRising ? '#fff' : candleColor, stroke: candleColor});
+        });
+      }
+      if (scenario === 'position' || scenario === 'error') {
+        const entryY = priceToY(1.08240);
+        drawElement('line', {x1: 12, x2: plotRight, y1: entryY, y2: entryY, stroke: '#82918b', 'stroke-dasharray': '5 5', 'stroke-width': 1});
+        drawElement('rect', {x: 22, y: entryY - 15, width: 136, height: 28, rx: 5, fill: '#fff', stroke: '#d8e4dd'});
+        drawElement('text', {x: 32, y: entryY + 3, fill: '#11765d', 'font-size': 12}, '↗ 开仓 · 1.08240');
+      }
+      const latestY = priceToY(1.08642);
+      drawElement('line', {x1: plotRight - 14, x2: plotRight + 8, y1: latestY, y2: latestY, stroke: '#4267df', 'stroke-dasharray': '3 3'});
+      drawElement('circle', {cx: plotRight - 14, cy: latestY, r: 4, fill: '#fff', stroke: '#4267df', 'stroke-width': 2});
+      drawElement('rect', {x: plotRight + 8, y: latestY - 13, width: 72, height: 26, rx: 4, fill: '#325deb'});
+      drawElement('text', {x: plotRight + 16, y: latestY + 4, fill: '#fff', 'font-size': 12}, '1.08642');
+      if (scenario === 'closed') drawElement('text', {x: plotRight - 44, y: latestY - 20, fill: '#11765d', 'font-size': 16}, '↘');
+    }
+    function setScenario(nextScenario) {
+      scenario = nextScenario;
+      isPlaying = false;
+      const hasPosition = scenario === 'position' || scenario === 'error';
+      const isInitial = scenario === 'initial';
+      const hasTrade = scenario === 'closed';
+      const hasError = scenario === 'error';
+      document.querySelectorAll('[data-scenario]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.scenario === scenario)));
+      byId('error-banner').hidden = !hasError;
+      byId('save-status').lastElementChild.textContent = hasError ? '保存失败' : '已保存到本机';
+      byId('save-status').classList.toggle('negative', hasError);
+      byId('save-status').querySelector('use').setAttribute('href', hasError ? '#info' : '#check');
+      byId('equity').textContent = hasPosition || hasTrade ? '10,003.71' : '10,000.00';
+      byId('balance').textContent = hasTrade ? '10,003.71' : '10,000.00';
+      byId('available').textContent = hasPosition ? '9,003.71' : hasTrade ? '10,003.71' : '10,000.00';
+      byId('margin').textContent = hasPosition ? '1,000.00' : '0.00';
+      byId('account-pnl').replaceChildren(document.createTextNode(hasPosition ? '+3.71' : '持平 0.00'));
+      const currency = document.createElement('small'); currency.textContent = 'USD'; byId('account-pnl').append(currency);
+      byId('account-pnl').classList.toggle('positive', hasPosition);
+      byId('account-pnl').classList.toggle('muted', !hasPosition);
+      byId('position-content').hidden = !hasPosition;
+      byId('position-direction').hidden = !hasPosition;
+      byId('position-empty').hidden = hasPosition;
+      byId('empty-journal').hidden = hasTrade;
+      byId('journal-table').hidden = !hasTrade;
+      byId('mobile-trade').hidden = !hasTrade;
+      byId('trade-count').textContent = hasTrade ? '1' : '0';
+      byId('chart-caption').hidden = !isInitial;
+      byId('bid').replaceChildren(document.createTextNode(isInitial ? '1.084' : '1.086'));
+      const priceTail = document.createElement('span'); priceTail.className = 'price-tail'; priceTail.textContent = isInitial ? '80' : '42'; byId('bid').append(priceTail);
+      byId('ask').textContent = byId('long-price').textContent = isInitial ? '1.08490' : '1.08652';
+      byId('short-price').textContent = isInitial ? '1.08480' : '1.08642';
+      byId('quote-time').textContent = isInitial ? '2024/03/04 08:01' : '2024/03/04 14:00';
+      byId('frame-count').textContent = isInitial ? '1 / 1440 根' : '360 / 1440 根';
+      byId('progress-fill').style.width = isInitial ? `${100/1440}%` : '25%';
+      document.querySelector('.progress-track').setAttribute('aria-valuenow', isInitial ? '1' : '360');
+      byId('playback-state').textContent = hasError ? '保存失败 · 已暂停' : '已暂停';
+      byId('play-button').setAttribute('aria-label','播放');
+      byId('play-button').querySelector('use').setAttribute('href','#play');
+      byId('play-button').querySelector('span').textContent = '播放';
+      byId('ohlc').hidden = isInitial || chartType !== 'candlestick';
+      document.querySelectorAll('.trade-panel button, .trade-panel input, #play-button, #step-button, #speed, #currency-pair, #new-session').forEach(control => control.disabled = hasError);
+      byId('buy-long').disabled = byId('buy-short').disabled = hasPosition || hasError;
+      byId('direction-reason').hidden = !hasPosition;
+      byId('trade-feedback').textContent = '';
+      byId('preview-feedback').textContent = hasError ? '保存失败示例：关键错误持续显示，暂停操作并保留恢复入口。' : isInitial ? '初次进入示例：仅显示首根行情，不用示例走势填补空白。' : hasTrade ? '已平仓示例：账户、持仓、图表标记与成交记录同时切换。' : '持仓示例：下单入口禁用，平仓保持明确；示例数据不随金额输入计算。';
+      drawChart();
+    }
+    document.querySelectorAll('[data-scenario]').forEach(button => button.addEventListener('click', () => setScenario(button.dataset.scenario)));
+    document.querySelectorAll('[data-chart]').forEach(button => button.addEventListener('click', () => {
+      chartType = button.dataset.chart;
+      document.querySelectorAll('[data-chart]').forEach(control => control.setAttribute('aria-pressed', String(control === button)));
+      byId('ohlc').hidden = scenario === 'initial' || chartType !== 'candlestick';
+      drawChart();
+    }));
+    document.querySelectorAll('[data-amount]').forEach(button => button.addEventListener('click', () => {
+      byId('trade-amount').value = button.dataset.amount;
+      document.querySelectorAll('[data-amount]').forEach(control => control.setAttribute('aria-pressed', String(control === button)));
+      byId('preview-feedback').textContent = '演示快捷金额的选中态。账户、资金占用和持仓为固定样例，不随输入计算。';
+    }));
+    byId('trade-amount').addEventListener('input', event => {
+      document.querySelectorAll('[data-amount]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.amount === event.target.value)));
+      byId('preview-feedback').textContent = '演示金额输入与焦点样式，样稿不计算交易或校验资金。';
+    });
+    byId('play-button').addEventListener('click', () => {
+      isPlaying = !isPlaying;
+      byId('play-button').setAttribute('aria-label', isPlaying ? '暂停' : '播放');
+      byId('play-button').querySelector('use').setAttribute('href', isPlaying ? '#pause' : '#play');
+      byId('play-button').querySelector('span').textContent = isPlaying ? '暂停' : '播放';
+      byId('playback-state').textContent = isPlaying ? '播放中 · 状态示例' : '已暂停';
+      byId('step-button').disabled = isPlaying;
+      byId('preview-feedback').textContent = '仅演示播放/暂停状态切换，行情和账户不实际推进。';
+    });
+    byId('step-button').addEventListener('click', () => { byId('preview-feedback').textContent = '“下一根”为视觉入口示例。样稿不推进真实练习；应用接入时沿用现有回放引擎。'; });
+    byId('close-position').addEventListener('click', () => { setScenario('closed'); byId('buy-long').focus(); byId('trade-feedback').textContent = '平仓反馈示例 · 盈利 +3.71 USD'; });
+    byId('buy-long').addEventListener('click', () => { setScenario('position'); byId('close-position').focus(); byId('trade-feedback').textContent = '已切换至买涨持仓示例'; });
+    byId('buy-short').addEventListener('click', () => { byId('preview-feedback').textContent = '买跌按钮演示点击反馈；本样稿仅包含固定的买涨持仓样例，不执行做空交易。'; });
+    byId('new-session').addEventListener('click', () => setScenario('initial'));
+    byId('retry-save').addEventListener('click', () => { setScenario('position'); byId('play-button').focus(); byId('preview-feedback').textContent = '已切换为恢复后暂停的视觉示例，未写入本机数据。'; });
+    byId('export-demo').addEventListener('click', () => { byId('preview-feedback').textContent = '展示故障恢复入口，样稿没有会话数据可导出。'; });
+    byId('currency-pair').addEventListener('change', event => {
+      event.target.value = 'EUR/USD';
+      byId('preview-feedback').textContent = '本样稿只绘制 EUR/USD 示例；实际应用沿用已有的 EUR/USD、GBP/USD 切换。';
+    });
+    byId('latest-button').addEventListener('click', () => { byId('preview-feedback').textContent = '样稿已展示最新示例报价。实际图表保留当前缩放、平移和回到最新能力。'; });
+    const helpTexts = {
+      equity: ['账户权益', '权益包含账户余额和当前持仓盈亏。这里的数字为视觉样例；正式应用继续使用现有账户计算。'],
+      spread: ['点差', 'Ask 是买入报价，Bid 是卖出报价，两者之差为点差。开仓后出现小幅浮亏，是买卖报价不同的结果，系统不会重复扣除点差。'],
+      amount: ['交易金额', '这里填写名义交易金额，单位为 USD。它不是最大亏损。资金占用采用项目的训练规则，具体说明继续使用现有业务约定。'],
+    };
+    document.querySelectorAll('[data-help]').forEach(button => button.addEventListener('click', () => {
+      helpTrigger = button;
+      const [title, content] = helpTexts[button.dataset.help];
+      byId('help-title').textContent = title; byId('help-content').textContent = content;
+      byId('help-dialog').showModal(); byId('close-help').focus();
+    }));
+    byId('close-help').addEventListener('click', () => byId('help-dialog').close());
+    byId('help-dialog').addEventListener('close', () => helpTrigger?.focus());
+    new ResizeObserver(drawChart).observe(byId('chart'));
+    setScenario('position');
+  </script>
+</body>
+</html>
