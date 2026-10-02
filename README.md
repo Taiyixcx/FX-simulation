@@ -6,11 +6,13 @@
 
 P0 已完成，P1 基础交易及整页设计更新已实现并验证：EUR/USD、GBP/USD 模拟行情，Bid 折线与 K 线、成交标记，暂停、单步和调速，单仓交易、账户指标与当前成交记录，以及 IndexedDB 一致快照和刷新后暂停恢复。详细证据见 [路线与验收](overview/04-roadmap-and-acceptance.md)。
 
-本次整页改为精致浅色的连续工作台，统一账户、报价、图表和交易布局；使用本地 Inter 字体及 SVG 图标，术语说明按需打开，手机成交记录可展开查看详情。图表替换为本地打包的 Apache ECharts 6.1.0，保持当前会话数据与交易规则；依赖许可随源码及构建产物提供，页面不展示第三方图表标识或版权段落。新版类型检查、构建、102 项单元测试及 13 项生产预览浏览器流程通过；已检查三种宽度、200% 文字放大及完整最高速度回放。
+2026-10-02 继续完成实际工作台美化：墨色品牌、主次分明的权益与报价、浅语义方向按钮、突出盈亏的持仓区、同页交易入口及六列两行成交记录。图表增加当前价标签与刻度避让，字号随文字放大，保留同一 ECharts 实例与观察范围；短操作反馈支持减少动效，下单、平仓和保存失败都有明确焦点位置。未新增依赖或改变训练交易、快照和保存规则。类型检查、构建、102 项单元测试及 14 项生产预览浏览器流程通过；另检查六种宽度、200% 文字放大、键盘和完整最高速度回放。
+
+英文与数字使用本地 Inter，图标为项目 SVG，术语按需打开。图表使用本地打包的 Apache ECharts 6.1.0；依赖许可随源码及构建产物提供，页面不展示第三方品牌或版权段落。
 
 每次“新练习”或切换品种创建独立资金与随机种子，旧练习保留在本机数据库。P1 暂无旧会话列表、备注、完整备份恢复和三步引导；保存失败时可重试或导出当前 JSON 快照，导出文件暂不能从界面导入。真实历史样本、CSV 导入与双击 `start.cmd` 尚未实现，P2–P4 仍按阶段推进。
 
-GitHub 仓库为 [Taiyixcx/FX-simulation](https://github.com/Taiyixcx/FX-simulation)。本机目录为 `D:\FX_site`；P1 及整页设计已通过 [PR #5](https://github.com/Taiyixcx/FX-simulation/pull/5) 的 squash merge 汇入 `main`。
+GitHub 仓库为 [Taiyixcx/FX-simulation](https://github.com/Taiyixcx/FX-simulation)。本机目录为 `D:\FX_site`；早期 P1 工作台通过 [PR #5](https://github.com/Taiyixcx/FX-simulation/pull/5) 的 squash merge 汇入 `main`。本轮改版在 `feature/opt` 实现，远端提交与合并见 [GitHub 主线记录](https://github.com/Taiyixcx/FX-simulation/commits/main/)。
 
 后续以 `main` 为唯一长期分支；改动在短期 `codex/*` 分支完成，通过 PR 的 squash merge 更新 `main`，核对本地与远端同步后删除辅助分支。不直接推送 `main`，不强推或改动仓库保护规则。
 
@@ -73,11 +75,15 @@ Remove-Item Env:\FX_E2E_PREVIEW
 
 ## 项目文档
 
+在 `feature/opt` 完成 [整体页面美化方案](overview/05-interface-redesign.md)、19 个官方页面的设计研究及实际 Vue 接入。前期 [独立交互样稿](overview/05-interface-preview.html) 可直接打开，保留持仓、初始、平仓和保存失败的视觉示例；它不执行交易或保存练习，当前应用以产品文档及实际验收为准。
+
 | 入口 | 内容 |
 | --- | --- |
 | [产品与设计](overview/01-product-and-design.md) | 当前工作台、首版范围与后续交互 |
 | [架构](overview/02-architecture.md) | 实际技术栈、目录职责、接口与数据流 |
 | [数据与交易](overview/03-data-and-trading.md) | 默认参数、行情来源、CSV、交易与保存规则 |
 | [路线与验收](overview/04-roadmap-and-acceptance.md) | P0–P4 阶段、完成条件及实际验证 |
+| [整体页面美化方案](overview/05-interface-redesign.md) | 已接入的视觉方向、模块设计、动效、响应式及设计取舍 |
+| [交互设计样稿](overview/05-interface-preview.html) | 可本机独立打开的示例界面，不执行交易或写入练习 |
 | [参考知识库](knowledge/README.md) | 外汇、网页工程和同类产品的官方资料 |
 | [开发规范](AGENTS.md) | 文件组织、命名、文档同步与验证约束 |

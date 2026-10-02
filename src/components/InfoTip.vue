@@ -72,11 +72,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .info-tip { display: inline-flex; vertical-align: middle; }
-.info-trigger { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; min-height: 0; padding: 0; color: var(--muted); border: 0; background: transparent; border-radius: 50%; }
+.info-trigger { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; min-height: 0; padding: 0; color: var(--muted); border: 0; background: transparent; border-radius: 6px; }
 .info-trigger:hover, .info-trigger[aria-expanded="true"] { color: var(--blue); background: var(--blue-soft); }
-.info-panel { position: fixed; z-index: 50; width: min(340px, calc(100vw - 32px)); padding: 16px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: 0 8px 32px #17243b14; font-size: .875rem; line-height: 1.7; max-height: calc(100vh - 32px); overflow: auto; }
-.info-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.info-panel { position: fixed; z-index: 50; width: min(340px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: 0 4px 12px #18212e08, 0 16px 40px #18212e12; font-size: .875rem; line-height: 1.75; max-height: calc(100vh - 32px); overflow: auto; animation: info-appear 140ms var(--ease, ease) both; }
+.info-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .info-heading strong { font-weight: 600; }
-.info-close { display: grid; place-items: center; border: 0; background: transparent; min-height: 0; width: 1.75rem; height: 1.75rem; padding: 0; color: var(--muted); }
+.info-close { display: grid; place-items: center; flex: none; border: 0; border-radius: 6px; background: transparent; min-height: 0; width: 1.75rem; height: 1.75rem; padding: 0; color: var(--muted); }
 .info-content { color: var(--muted); }
+@keyframes info-appear { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (max-width: 600px) { .info-trigger, .info-close { width: 44px; height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .info-panel { animation: none; } }
 </style>
