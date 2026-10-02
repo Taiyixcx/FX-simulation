@@ -47,9 +47,9 @@ const detailTime = computed(() => detailFrame.value
   : '等待行情')
 const markerPrices = computed(() => markers.value.map(marker => marker.price.toFixed(5)).join(','))
 
-const MARKET_BLUE = '#4267df'
-const BUY_GREEN = '#11765d'
-const SELL_RED = '#b4484d'
+const MARKET_COLOR = '#39866d'
+const BUY_GREEN = '#146747'
+const SELL_RED = '#9e304c'
 
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -77,9 +77,10 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
     ? props.frames[rightInsetIndex]?.quote.timestampMs ?? Infinity : Infinity
   const availablePlotWidth = getPlotWidth()
   const latestPrice = getCurrentPrice()
-  // At enlarged text sizes the actual marker already names this same entry price.
+  const canShowMarkerLabels = visibleMarkers.length <= 6
+  // A labelled entry marker already gives the price; avoid overlapping duplicate text.
   const hasVisibleEntryMarker = visibleMarkers.some(marker => marker.id === `${props.position?.id}-open`)
-  const canShowEntryLabel = availablePlotWidth > chartFontSize() * (hasVisibleEntryMarker ? 14 : 8)
+  const canShowEntryLabel = !(hasVisibleEntryMarker && canShowMarkerLabels) && availablePlotWidth > chartFontSize() * 8
   const common = {
     id: 'market-price',
     name: 'Bid',
@@ -96,7 +97,7 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
         symbolRotate: marker.isBuying ? 0 : 180,
         itemStyle: { color: marker.isBuying ? BUY_GREEN : SELL_RED, borderColor: '#fff', borderWidth: 1.5 },
         label: {
-          show: visibleMarkers.length <= 6,
+          show: canShowMarkerLabels,
           position: marker.isBuying ? 'top' as const : 'bottom' as const,
           align: marker.timestampMs >= nearRightTimestampMs ? 'right' as const : 'center' as const,
           offset: marker.timestampMs >= nearRightTimestampMs ? [-10, 0] : [0, 0],
@@ -130,14 +131,14 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
         ...(props.position ? [{ yAxis: Number(props.position.entryPrice) }] : []),
         ...(latestPrice === null ? [] : [{
           yAxis: latestPrice,
-          lineStyle: { color: MARKET_BLUE, type: 'dashed' as const, width: 1, opacity: .35 },
+          lineStyle: { color: MARKET_COLOR, type: 'dashed' as const, width: 1, opacity: .35 },
           label: {
             show: true,
             position: 'end' as const,
             distance: 8,
             formatter: formatChartPrice(latestPrice),
             color: '#fff',
-            backgroundColor: '#325deb',
+            backgroundColor: '#2f765f',
             // ECharts otherwise uses the price reference line's low opacity.
             opacity: 1,
             fontSize: chartFontSize(),
@@ -150,7 +151,7 @@ function createSeries(): LineSeriesOption | CandlestickSeriesOption {
     },
   }
   return props.chartType === 'line'
-    ? { ...common, type: 'line', data: linePoints, smooth: false, showSymbol: props.frames.length === 1, symbolSize: 7, lineStyle: { color: MARKET_BLUE, width: 2 }, areaStyle: { color: '#f3f6fd', opacity: 1 }, itemStyle: { color: MARKET_BLUE }, emphasis: { disabled: true } }
+    ? { ...common, type: 'line', data: linePoints, smooth: false, showSymbol: props.frames.length === 1, symbolSize: 7, lineStyle: { color: MARKET_COLOR, width: 2 }, areaStyle: { color: '#f1f8f3', opacity: 1 }, itemStyle: { color: MARKET_COLOR }, emphasis: { disabled: true } }
     : { ...common, type: 'candlestick', data: candlePoints, barMaxWidth: 12, itemStyle: { color: BUY_GREEN, color0: SELL_RED, borderColor: BUY_GREEN, borderColor0: SELL_RED }, emphasis: { disabled: true } }
 }
 
@@ -338,20 +339,20 @@ onMounted(() => {
   instanceId.value = chart.id
   chart.setOption({
     animation: false,
-    textStyle: { fontFamily: 'Inter, "Microsoft YaHei", system-ui, sans-serif', fontSize: chartFontSize(), color: '#667085' },
+    textStyle: { fontFamily: 'Inter, "Microsoft YaHei", system-ui, sans-serif', fontSize: chartFontSize(), color: '#546f69' },
     grid: getChartGrid(),
     tooltip: {
       trigger: 'axis',
       showContent: false,
-      axisPointer: { type: 'cross', lineStyle: { color: '#98a2b3', type: 'dashed' }, crossStyle: { color: '#98a2b3', type: 'dashed' }, label: { backgroundColor: '#475467' } },
+      axisPointer: { type: 'cross', lineStyle: { color: '#91aaa0', type: 'dashed' }, crossStyle: { color: '#91aaa0', type: 'dashed' }, label: { backgroundColor: '#48695f' } },
     },
     xAxis: {
       type: 'category',
       boundaryGap: true,
       data: [],
-      axisLine: { lineStyle: { color: '#edf0f4' } },
+      axisLine: { lineStyle: { color: '#e2ede6' } },
       axisTick: { show: false },
-      axisLabel: { color: '#667085', margin: 14, hideOverlap: true, formatter: formatTimeAxisTick },
+      axisLabel: { color: '#546f69', margin: 14, hideOverlap: true, formatter: formatTimeAxisTick },
       splitLine: { show: false },
       axisPointer: { label: { formatter: (params: { value: unknown }) => formatTimeAxisTick(String(params.value)) } },
     },
@@ -362,8 +363,8 @@ onMounted(() => {
       splitNumber: 4,
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: '#667085', margin: 12, hideOverlap: true, formatter: formatPriceAxisTick },
-      splitLine: { lineStyle: { color: '#edf0f4', width: 1 } },
+      axisLabel: { color: '#546f69', margin: 12, hideOverlap: true, formatter: formatPriceAxisTick },
+      splitLine: { lineStyle: { color: '#e2ede6', width: 1 } },
       axisPointer: { label: { formatter: (params: { value: unknown }) => formatChartPrice(Number(params.value)) } },
     },
     dataZoom: [{
@@ -470,7 +471,7 @@ onBeforeUnmount(() => {
 .chart-canvas { width: 100%; height: 21.875rem; font-size: .875rem; touch-action: pan-y; }
 .chart-canvas:focus-visible { outline-offset: -3px; }
 .initial-state { position: absolute; bottom: 3.5rem; left: 24px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .875rem; pointer-events: none; }
-.initial-dot { width: 6px; height: 6px; border-radius: 50%; background: #98a2b3; }
+.initial-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
 @media (max-width: 600px) {
   .chart-details { flex-wrap: wrap; padding: 8px 0 0; gap: 4px 12px; }
   .latest-button { min-width: 44px; min-height: 44px; }

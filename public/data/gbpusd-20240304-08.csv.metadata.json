@@ -1,0 +1,42 @@
+{
+  "label": "GBP/USD HistData M1",
+  "sourceName": "HistData Generic ASCII 双边 tick",
+  "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/",
+  "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+  "conversionNotes": "按 UTC [minuteStart, minuteStart+60秒) 聚合 Bid OHLC，时间标为分钟完成；保留最后一组 Bid/Ask，不补无 tick 分钟。原始 tick 已全量校验，--from/--to 仅裁剪输出完成时间（含边界）。",
+  "conversionVersion": "histdata-tick-m1-v1",
+  "licenseNotes": "仅在本机按来源允许的个人策略研究用途使用；尚未核实公开再分发许可，原始及转换价格文件不提交公开仓库。",
+  "verified": true,
+  "period": "M1",
+  "quoteType": "source",
+  "recordCount": 7050,
+  "startTimestampMs": 1709510400000,
+  "endTimestampMs": 1709935200000,
+  "fileSha256": "fdacaba960f0c653d95c525ce1b9afd625f5962f3bfd07d85fe3a8fd3777acbc",
+  "provenance": {
+    "version": "histdata-tick-m1-v1",
+    "inputFilename": "DAT_ASCII_GBPUSD_T_202403.csv",
+    "inputBytes": 56225871,
+    "inputSha256": "c60945ea4e04537ba9b318a6e1f3119c08ea34a8b0e014a9b40a14dc2c3e5c10",
+    "inputRecordCount": 1441689,
+    "inputStartTimestampMs": 1709269201693,
+    "inputEndTimestampMs": 1711947590874,
+    "fullOutputMinuteCount": 30022,
+    "outputRecordCount": 7050,
+    "outputSha256": "fdacaba960f0c653d95c525ce1b9afd625f5962f3bfd07d85fe3a8fd3777acbc",
+    "fingerprint": "dfc3bf9cf2a3a764de56f48ecbc2f4e798588f2974c045f7d21a1492bd8e8ac9",
+    "completedTimeRangeInclusive": {
+      "fromTimestampMs": 1709510400000,
+      "toTimestampMs": 1709942340000
+    },
+    "validation": "原始时间、顺序、正 Bid/Ask、Ask≥Bid、volume 字段与全部输出 CSV 校验通过",
+    "acquisition": {
+      "acquiredOn": "2026-10-02",
+      "downloadPageUrl": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/tick-data-quotes/gbpusd/2024/3",
+      "archiveFilename": "gbpusd-202403.zip",
+      "archiveSha256": "95f4cefaa1ec46147356c1896c656238657da1c0b257a576174ffe2c48f6f80c",
+      "providerUseStatement": "https://www.histdata.com/about-us/",
+      "usage": "个人本机策略练习；公开再分发许可未核实，价格文件不提交"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "label": "EUR/USD HistData M1",
+  "sourceName": "HistData Generic ASCII 双边 tick",
+  "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/",
+  "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+  "conversionNotes": "按 UTC [minuteStart, minuteStart+60秒) 聚合 Bid OHLC，时间标为分钟完成；保留最后一组 Bid/Ask，不补无 tick 分钟。原始 tick 已全量校验，--from/--to 仅裁剪输出完成时间（含边界）。",
+  "conversionVersion": "histdata-tick-m1-v1",
+  "licenseNotes": "仅在本机按来源允许的个人策略研究用途使用；尚未核实公开再分发许可，原始及转换价格文件不提交公开仓库。",
+  "verified": true,
+  "period": "M1",
+  "quoteType": "source",
+  "recordCount": 7054,
+  "startTimestampMs": 1709510400000,
+  "endTimestampMs": 1709935200000,
+  "fileSha256": "42ee85c58d0ee3b7ed6c12576b7878ac39fef4676937bfa42c218df47c63121f",
+  "provenance": {
+    "version": "histdata-tick-m1-v1",
+    "inputFilename": "DAT_ASCII_EURUSD_T_202403.csv",
+    "inputBytes": 57592353,
+    "inputSha256": "6e6d5b668b3a0348221082513bac8fe02a8e8767d574049e9799206218aed690",
+    "inputRecordCount": 1476727,
+    "inputStartTimestampMs": 1709269200765,
+    "inputEndTimestampMs": 1711947596361,
+    "fullOutputMinuteCount": 30026,
+    "outputRecordCount": 7054,
+    "outputSha256": "42ee85c58d0ee3b7ed6c12576b7878ac39fef4676937bfa42c218df47c63121f",
+    "fingerprint": "751db35df00f0319701364ad74781d363e2dc61077fb465783b009a1d315854f",
+    "completedTimeRangeInclusive": {
+      "fromTimestampMs": 1709510400000,
+      "toTimestampMs": 1709942340000
+    },
+    "validation": "原始时间、顺序、正 Bid/Ask、Ask≥Bid、volume 字段与全部输出 CSV 校验通过",
+    "acquisition": {
+      "acquiredOn": "2026-10-02",
+      "downloadPageUrl": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/tick-data-quotes/eurusd/2024/3",
+      "archiveFilename": "eurusd-202403.zip",
+      "archiveSha256": "b70fcaf5ee82ca6dc847f8a6c0f4354ecb456ae8579faed8563b53ac2ac324df",
+      "providerUseStatement": "https://www.histdata.com/about-us/",
+      "usage": "个人本机策略练习；公开再分发许可未核实，价格文件不提交"
+    }
+  }
+}

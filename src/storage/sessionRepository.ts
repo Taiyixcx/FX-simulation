@@ -1,10 +1,17 @@
 import { copySessionSnapshot, createSessionHistoryValidator, SESSION_FRAME_WINDOW_SIZE, validateSessionSnapshot, validateSessionTransition } from './sessionSnapshot'
 import type { SessionSnapshot } from './sessionSnapshot'
 import type { MarketFrame } from '../engine/types'
+import { validateHistoryDataset, validateHistoryDatasetSummary } from '../engine/historySource'
+import type { HistoryDataset, HistoryDatasetSummary } from '../engine/historyTypes'
+import { copyPracticeSnapshot, isHistoricalSnapshot, validateHistoricalSnapshot, validateHistoricalTransition } from './historicalSessionSnapshot'
+import type { HistoricalSessionSnapshot, PracticeSnapshot } from './historicalSessionSnapshot'
 
 export interface SessionRepository {
-  loadCurrent(): Promise<SessionSnapshot | null>
-  save(snapshot: SessionSnapshot): Promise<void>
+  loadCurrent(): Promise<PracticeSnapshot | null>
+  save(snapshot: PracticeSnapshot): Promise<void>
+  importDataset(dataset: HistoryDataset): Promise<void>
+  listDatasets(): Promise<HistoryDatasetSummary[]>
+  loadDataset(id: string): Promise<HistoryDataset | null>
   close(): void
 }
 
@@ -53,20 +60,22 @@ function parseChunk(input: unknown, sessionId: string, chunkIndex: number, expec
 export function createSessionRepository(databaseName = 'fx-simulation'): SessionRepository {
   let databasePromise: Promise<IDBDatabase> | null = null
   let baseline: CurrentPointer | null | undefined
-  let verifiedHead: SessionSnapshot | null = null
+  let verifiedHead: PracticeSnapshot | null = null
+  let verifiedDataset: HistoryDataset | null = null
   let pendingMigrationFrames: MarketFrame[] | null = null
 
   function openDatabase(): Promise<IDBDatabase> {
     if (databasePromise) return databasePromise
     databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
       if (typeof indexedDB === 'undefined') { reject(new Error('此浏览器无法使用本地数据库。')); return }
-      const request = indexedDB.open(databaseName, 2)
+      const request = indexedDB.open(databaseName, 3)
       let wasBlocked = false
       request.onupgradeneeded = () => {
         const database = request.result
         if (!database.objectStoreNames.contains('sessions')) database.createObjectStore('sessions', { keyPath: 'id' })
         if (!database.objectStoreNames.contains('settings')) database.createObjectStore('settings')
         if (!database.objectStoreNames.contains('historyChunks')) database.createObjectStore('historyChunks', { keyPath: ['sessionId', 'chunkIndex'] })
+        if (!database.objectStoreNames.contains('datasets')) database.createObjectStore('datasets', { keyPath: 'id' })
       }
       request.onerror = () => reject(request.error ?? new Error('本地数据库打开失败。'))
       request.onblocked = () => { wasBlocked = true; reject(new Error('其他窗口占用了本地数据库，请关闭其他练习窗口后重试。')) }
@@ -79,7 +88,63 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     return databasePromise
   }
 
-  async function loadCurrent(): Promise<SessionSnapshot | null> {
+  async function importDataset(input: HistoryDataset): Promise<void> {
+    const dataset = structuredClone(input)
+    await validateHistoryDataset(dataset)
+    const database = await openDatabase()
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction('datasets', 'readwrite')
+      let failure: unknown = null
+      const store = transaction.objectStore('datasets')
+      const existing = store.get(dataset.id)
+      existing.onsuccess = () => {
+        if (existing.result !== undefined) {
+          failure = new Error('这份历史数据已经导入，原数据集没有被覆盖。请从已导入列表中选择。')
+          transaction.abort()
+        } else store.add(dataset)
+      }
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('历史数据导入事务未完成，原有数据没有被覆盖。'))
+      transaction.onerror = () => { failure ??= transaction.error }
+    })
+  }
+
+  async function loadDataset(id: string): Promise<HistoryDataset | null> {
+    const database = await openDatabase()
+    const input = await readStored(database, 'datasets', id)
+    if (input === undefined) return null
+    // Validation includes every original row and the immutable source fingerprint.
+    await validateHistoryDataset(input as HistoryDataset)
+    const dataset = input as HistoryDataset
+    if (dataset.id !== id) throw new Error('历史数据集标识与数据库索引不一致。原有数据没有被覆盖。')
+    // The engine freezes verified datasets. Reusing that object preserves its
+    // private validation certificate without letting callers mutate the source.
+    verifiedDataset = dataset
+    return dataset
+  }
+
+  async function listDatasets(): Promise<HistoryDatasetSummary[]> {
+    const database = await openDatabase()
+    return new Promise<HistoryDatasetSummary[]>((resolve, reject) => {
+      const transaction = database.transaction('datasets', 'readonly')
+      const request = transaction.objectStore('datasets').openCursor()
+      const summaries: HistoryDatasetSummary[] = []
+      let failure: unknown = null
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (!cursor) return
+        try {
+          // Listing source information never hashes or retains unselected quotes.
+          summaries.push(validateHistoryDatasetSummary(cursor.value as unknown))
+          cursor.continue()
+        } catch (error) { failure = error; transaction.abort() }
+      }
+      transaction.oncomplete = () => resolve(summaries)
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取历史数据列表失败。'))
+    })
+  }
+
+  async function loadCurrent(): Promise<PracticeSnapshot | null> {
     baseline = undefined
     verifiedHead = null
     pendingMigrationFrames = null
@@ -117,8 +182,14 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       if (typeof raw !== 'object' || raw === null || !('revision' in raw) || raw.revision !== loaded.pointer.revision || !('id' in raw) || raw.id !== loaded.pointer.id) {
         throw new Error('练习快照与索引版本不一致。原有数据没有被覆盖。')
       }
-      let restored: SessionSnapshot
-      if ('schemaVersion' in raw && (raw.schemaVersion === 1 || raw.schemaVersion === 2)) {
+      let restored: PracticeSnapshot
+      if ('schemaVersion' in raw && raw.schemaVersion === 4) {
+        const source = 'sourceState' in raw && typeof raw.sourceState === 'object' && raw.sourceState !== null && 'datasetId' in raw.sourceState ? raw.sourceState : null
+        if (!source || typeof source.datasetId !== 'string') throw new Error('历史练习的数据集引用损坏。原有数据没有被覆盖。')
+        const dataset = await loadDataset(source.datasetId)
+        if (!dataset) throw new Error('历史练习引用的原始数据集缺失。原有数据没有被覆盖。')
+        restored = validateHistoricalSnapshot(raw, dataset)
+      } else if ('schemaVersion' in raw && (raw.schemaVersion === 1 || raw.schemaVersion === 2)) {
         restored = validateSessionSnapshot(raw)
         // All fields were checked above by the complete legacy validator.
         const legacyFrames = (raw as unknown as { frames: MarketFrame[] }).frames
@@ -146,17 +217,69 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       }
       if (!samePointer(parsePointer(await readStored(database, 'settings', 'current')), loaded.pointer)) throw new Error('另一窗口在读取期间更新了练习，请重试读取。原有数据没有被覆盖。')
       baseline = loaded.pointer
-      verifiedHead = copySessionSnapshot(restored)
-      return copySessionSnapshot(restored)
+      verifiedHead = copyPracticeSnapshot(restored)
+      return copyPracticeSnapshot(restored)
     } catch (error) {
       pendingMigrationFrames = null
       throw new SessionLoadError(error instanceof Error ? error.message : '读取练习失败。', raw ?? null)
     }
   }
 
-  async function save(snapshot: SessionSnapshot): Promise<void> {
+  async function saveHistorical(snapshot: HistoricalSessionSnapshot): Promise<void> {
     if (baseline === undefined) throw new Error('请先读取当前练习，再保存数据。')
-    const previous = verifiedHead?.id === snapshot.id ? verifiedHead : null
+    const prior = verifiedHead?.id === snapshot.id ? verifiedHead : null
+    if (prior && !isHistoricalSnapshot(prior)) throw new Error('练习模式不可原地改变。原有数据没有被覆盖。')
+    const dataset = verifiedDataset?.id === snapshot.sourceState.datasetId
+      ? verifiedDataset : await loadDataset(snapshot.sourceState.datasetId)
+    if (!dataset) throw new Error('历史练习引用的原始数据集缺失。原有数据没有被覆盖。')
+    const validated = prior ? validateHistoricalTransition(prior, snapshot, dataset) : validateHistoricalSnapshot(snapshot, dataset)
+    if (prior && validated.revision === prior.revision && JSON.stringify(validated) !== JSON.stringify(prior)) throw new Error('练习状态发生改变但保存版本未推进。原有数据没有被覆盖。')
+    const database = await openDatabase()
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(['sessions', 'settings', 'datasets'], 'readwrite')
+      let failure: unknown = null
+      function abort(error: unknown): void { failure = error; transaction.abort() }
+      function writeHead(): void {
+        transaction.objectStore('sessions').put(validated)
+        transaction.objectStore('settings').put({ id: validated.id, revision: validated.revision }, 'current')
+      }
+      const pointer = transaction.objectStore('settings').get('current')
+      pointer.onsuccess = () => {
+        try {
+          if (!samePointer(parsePointer(pointer.result as unknown), baseline ?? null)) throw new Error('另一窗口已更新练习。请先导出此窗口的未保存快照，再关闭此窗口并刷新恢复最新练习；不会覆盖另一窗口的数据。')
+          // Datasets are append-only. Full source validation runs when opening
+          // one; a key check avoids cloning every future quote on each save.
+          const source = transaction.objectStore('datasets').count(dataset.id)
+          source.onsuccess = () => {
+            try {
+              if (source.result !== 1) throw new Error('历史数据集在保存期间丢失。原有数据没有被覆盖。')
+              if (prior) {
+                if (validated.revision !== prior.revision) writeHead()
+              } else {
+                const existing = transaction.objectStore('sessions').get(validated.id)
+                existing.onsuccess = () => {
+                  if (existing.result !== undefined) abort(new Error('练习标识已存在，不能覆盖已保存记录。'))
+                  else writeHead()
+                }
+              }
+            } catch (error) { abort(error) }
+          }
+        } catch (error) { abort(error) }
+      }
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('保存事务未完成，请重试或导出快照。'))
+      transaction.onerror = () => { failure ??= transaction.error }
+    })
+    baseline = { id: validated.id, revision: validated.revision }
+    verifiedHead = copyPracticeSnapshot(validated)
+    pendingMigrationFrames = null
+  }
+
+  async function saveSimulation(snapshot: SessionSnapshot): Promise<void> {
+    if (baseline === undefined) throw new Error('请先读取当前练习，再保存数据。')
+    const prior = verifiedHead?.id === snapshot.id ? verifiedHead : null
+    if (prior && isHistoricalSnapshot(prior)) throw new Error('练习模式不可原地改变。原有数据没有被覆盖。')
+    const previous = prior
     const validated = previous ? validateSessionTransition(previous, snapshot) : validateSessionSnapshot(snapshot)
     if (previous && validated.revision === previous.revision && JSON.stringify(validated) !== JSON.stringify(previous)) {
       throw new Error('练习状态发生改变但保存版本未推进。原有数据没有被覆盖。')
@@ -239,12 +362,14 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   }
 
   return {
-    loadCurrent, save,
+    loadCurrent, importDataset, listDatasets, loadDataset,
+    save(snapshot) { return isHistoricalSnapshot(snapshot) ? saveHistorical(snapshot) : saveSimulation(snapshot) },
     close() {
       if (databasePromise) void databasePromise.then(database => database.close(), () => undefined)
       databasePromise = null
       baseline = undefined
       verifiedHead = null
+      verifiedDataset = null
       pendingMigrationFrames = null
     },
   }

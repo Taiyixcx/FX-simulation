@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "samples": [
+    {
+      "label": "EUR/USD HistData M1 · 2024-03-04—08",
+      "pair": "EUR/USD",
+      "path": "eurusd-20240304-08.csv",
+      "sha256": "42ee85c58d0ee3b7ed6c12576b7878ac39fef4676937bfa42c218df47c63121f",
+      "sourceName": "HistData Generic ASCII 双边 tick",
+      "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/",
+      "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+      "conversionNotes": "按 UTC [minuteStart, minuteStart+60秒) 聚合 Bid OHLC，时间标为分钟完成；保留最后一组 Bid/Ask，不补无 tick 分钟。原始 tick 已全量校验，--from/--to 仅裁剪输出完成时间（含边界）。",
+      "conversionVersion": "histdata-tick-m1-v1",
+      "licenseNotes": "仅在本机按来源允许的个人策略研究用途使用；尚未核实公开再分发许可，原始及转换价格文件不提交公开仓库。"
+    },
+    {
+      "label": "GBP/USD HistData M1 · 2024-03-04—08",
+      "pair": "GBP/USD",
+      "path": "gbpusd-20240304-08.csv",
+      "sha256": "fdacaba960f0c653d95c525ce1b9afd625f5962f3bfd07d85fe3a8fd3777acbc",
+      "sourceName": "HistData Generic ASCII 双边 tick",
+      "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/",
+      "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+      "conversionNotes": "按 UTC [minuteStart, minuteStart+60秒) 聚合 Bid OHLC，时间标为分钟完成；保留最后一组 Bid/Ask，不补无 tick 分钟。原始 tick 已全量校验，--from/--to 仅裁剪输出完成时间（含边界）。",
+      "conversionVersion": "histdata-tick-m1-v1",
+      "licenseNotes": "仅在本机按来源允许的个人策略研究用途使用；尚未核实公开再分发许可，原始及转换价格文件不提交公开仓库。"
+    }
+  ]
+}

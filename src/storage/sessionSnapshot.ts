@@ -223,12 +223,12 @@ function verifyPhysicalFrame(frame: MarketFrame, previousTimestampMs: number): v
   if (!new MoneyDecimal(frame.quote.askPrice).gt(frame.quote.bidPrice)) fail('行情 Bid/Ask 无效')
 }
 
-function parseAccount(input: unknown): AccountState {
+export function parseAccount(input: unknown): AccountState {
   const account = record(input, '账户')
   return { balanceUsd: decimal(account.balanceUsd, '账户余额'), position: account.position === null ? null : parsePosition(account.position) }
 }
 
-function parseTrades(input: unknown): TradeRecord[] {
+export function parseTrades(input: unknown): TradeRecord[] {
   if (!Array.isArray(input)) fail('成交记录必须是数组')
   return input.map(parseTrade)
 }
@@ -276,7 +276,7 @@ function verifyClosedTrade(actual: TradeRecord, expected: TradeRecord): void {
 }
 
 /** Reconstruct operations as their quotes arrive; never retain the full quote history. */
-function createLedgerValidator(currencyPair: CurrencyPair, targetAccount: AccountState, trades: TradeRecord[], initialAccount: AccountState = { balanceUsd: '10000', position: null }, priorTradeIds: string[] = [], checkpointTimestampMs = -1) {
+export function createLedgerValidator(currencyPair: CurrencyPair, targetAccount: AccountState, trades: TradeRecord[], initialAccount: AccountState = { balanceUsd: '10000', position: null }, priorTradeIds: string[] = [], checkpointTimestampMs = -1) {
   let ledger = structuredClone(initialAccount)
   let tradeIndex = 0
   let depletedTimestampMs = new MoneyDecimal(ledger.balanceUsd).lte(0) ? checkpointTimestampMs : null
