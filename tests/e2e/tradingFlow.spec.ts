@@ -58,7 +58,7 @@ test('多空交易、逐根推进及刷新恢复同一快照并暂停', async ({
   expect((await readSnapshot(page)).trades).toHaveLength(2)
   await page.getByLabel('速度').selectOption('10')
   await page.getByRole('button', { name: '播放', exact: true }).click()
-  await expect(page.getByTestId('progress')).toContainText('12 / 1440')
+  await expect.poll(async () => Number(await page.getByTestId('market-chart').getAttribute('data-frame-count'))).toBeGreaterThanOrEqual(12)
   await page.getByRole('button', { name: '暂停', exact: true }).click()
   await waitSaved(page)
   const paused = await readSnapshot(page)

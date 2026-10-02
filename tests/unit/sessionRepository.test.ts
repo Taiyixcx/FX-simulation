@@ -33,6 +33,41 @@ async function changePointer(name: string, pointer: unknown | null): Promise<voi
 }
 
 describe('IndexedDB session repository', () => {
+  it('closes a connection that succeeds after a blocked open was rejected and allows retrying', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const originalOpen = indexedDB.open.bind(indexedDB)
+    const blockingDatabase = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = originalOpen(name, 1)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    let lateDatabase: IDBDatabase | null = null
+    const close = vi.spyOn(IDBDatabase.prototype, 'close')
+    let resolveSuccess!: (database: IDBDatabase) => void
+    const success = new Promise<IDBDatabase>((resolve) => { resolveSuccess = resolve })
+    // An upgrade makes IndexedDB emit blocked while the earlier connection remains open.
+    vi.spyOn(indexedDB, 'open').mockImplementation((databaseName, version) => {
+      const request = originalOpen(databaseName, databaseName === name ? 2 : version)
+      request.addEventListener('success', () => resolveSuccess(request.result), { once: true })
+      return request
+    })
+    const created = repository(name)
+    try {
+      await expect(created.loadCurrent()).rejects.toThrow('其他窗口占用了本地数据库')
+      blockingDatabase.close()
+      lateDatabase = await success
+      expect(close.mock.contexts).toContain(lateDatabase)
+      expect(() => lateDatabase!.transaction('settings')).toThrowError(expect.objectContaining({ name: 'InvalidStateError' }))
+      expect(await created.loadCurrent()).toBeNull()
+      const snapshot = makeSession()
+      await created.save(snapshot)
+      expect(await created.loadCurrent()).toEqual(snapshot)
+    } finally {
+      blockingDatabase.close()
+      lateDatabase?.close()
+    }
+  })
+
   it('commits a coherent snapshot and current pointer and retains the previous session when switching', async () => {
     const name = `fx-test-${crypto.randomUUID()}`
     const firstRepository = repository(name)

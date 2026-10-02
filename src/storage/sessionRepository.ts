@@ -44,14 +44,23 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         return
       }
       const request = indexedDB.open(databaseName, 1)
+      let wasBlocked = false
       request.onupgradeneeded = () => {
         const database = request.result
         database.createObjectStore('sessions', { keyPath: 'id' })
         database.createObjectStore('settings')
       }
       request.onerror = () => reject(request.error ?? new Error('本地数据库打开失败。'))
-      request.onblocked = () => reject(new Error('其他窗口占用了本地数据库，请关闭其他练习窗口后重试。'))
+      request.onblocked = () => {
+        wasBlocked = true
+        reject(new Error('其他窗口占用了本地数据库，请关闭其他练习窗口后重试。'))
+      }
       request.onsuccess = () => {
+        // A blocked request can still succeed after its promise has been rejected.
+        if (wasBlocked) {
+          request.result.close()
+          return
+        }
         request.result.onversionchange = () => {
           request.result.close()
           databasePromise = null
