@@ -46,22 +46,22 @@ function togglePlayback() {
 </template>
 
 <style scoped>
-.replay-controls { border-top: 1px solid var(--line); padding: 14px 0 0; }
-.replay-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding-bottom: 14px; }
+.replay-controls { border-top: 1px solid var(--line); padding: 12px 0 0; }
+.replay-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-width: 0; padding-bottom: 12px; }
 .playback-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.playback-actions button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 40px; padding: 8px 13px; border-radius: 6px; font-size: .875rem; }
+.playback-actions button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 40px; padding: 8px 13px; border-radius: 8px; font-size: .8125rem; font-weight: 500; }
 .playback-actions :deep(svg) { flex: none; }
-.playback-toggle { min-width: 5.5rem; }
+.playback-actions .playback-toggle { min-width: 5.5rem; font-weight: 600; }
 .next-frame { color: var(--text); }
-.speed-control { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-.speed-control label { color: var(--muted); font-size: .8125rem; }
-.speed-control select { min-height: 40px; padding: 7px 26px 7px 10px; border-color: var(--line-strong); border-radius: 6px; font-size: .875rem; background: var(--surface-soft); }
+.speed-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.speed-control label { color: var(--muted); font-size: .8125rem; font-weight: 500; }
+.speed-control select { min-width: 7.5rem; min-height: 40px; padding: .5rem 2.25rem .5rem .75rem; border-radius: 8px; font-size: .8125rem; font-weight: 500; }
 .progress { display: flex; flex-wrap: wrap; align-items: center; margin-left: auto; color: var(--muted); font-size: .8125rem; line-height: 1.6; }
 .playback-state { white-space: nowrap; }
 .playback-state.is-playing { color: var(--blue); }
-.progress-track { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.progress-track { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .progress-track span { display: block; height: 100%; background: var(--blue); }
 .progress-track span.is-incremental { transition: width 100ms linear; }
-@media (max-width: 600px) { .replay-toolbar { gap: 12px 16px; } .playback-actions button, .speed-control select { min-height: 44px; } .progress { flex-basis: 100%; margin-left: 0; } }
+@media (max-width: 600px) { .replay-toolbar { gap: 12px; } .playback-actions button, .speed-control select { min-height: 44px; } .progress { flex-basis: 100%; margin-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .progress-track span.is-incremental { transition: none; } }
 </style>

@@ -32,18 +32,18 @@ const session = useSessionStore()
 </template>
 
 <style scoped>
-.account-summary { display: grid; grid-template-columns: minmax(0, 1.35fr) repeat(4, minmax(0, 1fr)); gap: 20px 0; align-items: center; padding: 22px 28px; border-bottom: 1px solid var(--line); }
-.account-metric { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0 24px; border-left: 1px solid var(--line); }
+.account-summary { display: grid; grid-template-columns: minmax(0, 1.35fr) repeat(4, minmax(0, 1fr)); gap: 20px 0; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--blue-soft); }
+.account-metric { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 0 24px; border-left: 1px solid var(--line); }
 .account-metric:first-child { padding-left: 0; border-left: 0; }
 .account-metric:last-child { padding-right: 0; }
-.metric-label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 1.5rem; color: var(--muted); font-size: .875rem; }
-.account-metric strong { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; font-size: 1.25rem; font-weight: 550; line-height: 1.3; letter-spacing: -.035em; }
+.metric-label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 1.5rem; color: var(--muted); font-size: .8125rem; font-weight: 500; letter-spacing: 0; }
+.account-metric strong { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; font-size: 1.375rem; font-weight: 600; line-height: 1.3; letter-spacing: -.035em; }
 .account-metric strong > span { min-width: 0; overflow-wrap: anywhere; }
-.account-metric strong small { font-size: .8125rem; font-weight: 500; letter-spacing: .01em; color: var(--muted); }
-.equity-metric strong { font-size: 2rem; font-weight: 600; letter-spacing: -.045em; }
+.account-metric strong small { font-size: .75rem; font-weight: 500; letter-spacing: .02em; color: var(--muted); }
+.equity-metric strong { font-size: 2rem; font-weight: 700; letter-spacing: -.045em; }
 @media (max-width: 1200px) { .account-metric { padding: 0 16px; } }
 @media (max-width: 800px) {
-  .account-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; padding: 22px 24px; }
+  .account-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; padding: 20px 24px; }
   .account-metric { padding: 0; border: 0; gap: 5px; }
   .equity-metric { grid-column: 1 / -1; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 }
@@ -54,4 +54,5 @@ const session = useSessionStore()
   .equity-metric { grid-column: 1 / -1; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 }
 @container workspace (max-width: 19rem) { .account-summary { grid-template-columns: minmax(0, 1fr); } }
+@container workspace (max-width: 12rem) { .equity-metric strong { font-size: 1.75rem; } }
 </style>

@@ -94,18 +94,20 @@ onMounted(async () => {
     <div class="history-content">
       <p class="description">导入完成的 Bid 分钟行情，或载入本机样本。导入只增加数据集；开始回放会创建独立资金的练习，旧记录保留。</p>
       <form class="csv-form" @submit.prevent="importCsv">
-        <div class="import-fields">
-          <label>CSV 货币对<select v-model="csvPair" :disabled="!canImport"><option>EUR/USD</option><option>GBP/USD</option></select></label>
-          <label class="file-field">CSV 文件<input type="file" accept=".csv,text/csv" :disabled="!canImport" @change="selectFile" /></label>
-          <label>来源名称<input v-model="sourceName" maxlength="200" placeholder="可选，例如数据提供方" :disabled="!canImport" /></label>
-          <label>来源链接<input v-model="sourceUrl" type="url" maxlength="2000" placeholder="可选，https://…" :disabled="!canImport" /></label>
-          <label>原始时区<input v-model="originalTimezone" maxlength="200" required :disabled="!canImport" /></label>
+        <div class="import-fields file-fields">
+          <div class="import-field"><label for="history-csv-pair">CSV 货币对</label><select id="history-csv-pair" v-model="csvPair" :disabled="!canImport"><option>EUR/USD</option><option>GBP/USD</option></select></div>
+          <div class="import-field file-field"><label for="history-csv-file">CSV 文件</label><input id="history-csv-file" type="file" accept=".csv,text/csv" :disabled="!canImport" @change="selectFile" /></div>
+        </div>
+        <div class="import-fields source-fields">
+          <div class="import-field"><label for="history-source-name">来源名称</label><input id="history-source-name" v-model="sourceName" maxlength="200" placeholder="可选，例如数据提供方" :disabled="!canImport" /></div>
+          <div class="import-field"><label for="history-source-url">来源链接</label><input id="history-source-url" v-model="sourceUrl" type="url" maxlength="2000" placeholder="可选，https://…" :disabled="!canImport" /></div>
+          <div class="import-field"><label for="history-source-timezone">原始时区</label><input id="history-source-timezone" v-model="originalTimezone" maxlength="200" required :disabled="!canImport" /></div>
         </div>
         <div class="import-actions"><button class="button-outline" type="submit" :disabled="!canImport || !csvFile">{{ isImporting ? '校验与保存中…' : '导入 CSV' }}</button><a href="/data/csv-template.csv" download>下载 CSV 模板</a></div>
         <p class="description">表头 timestamp,open,high,low,close[,ask]；时间须带时区并表示分钟完成时刻。Ask 缺失时使用训练点差。最大 20 MiB / 200,000 根；模板为生成示例。</p>
       </form>
       <div v-if="localSamples.length" class="dataset-actions local-samples">
-        <label>本机样本<select v-model="selectedSamplePath" :disabled="!canImport"><option v-for="sample in localSamples" :key="sample.path" :value="sample.path">{{ sample.label }}</option></select></label>
+        <div class="dataset-field"><label for="history-local-sample">本机样本</label><select id="history-local-sample" v-model="selectedSamplePath" :disabled="!canImport"><option v-for="sample in localSamples" :key="sample.path" :value="sample.path">{{ sample.label }}</option></select></div>
         <button class="button-outline" :disabled="!canImport || !selectedSamplePath" @click="importLocalSample">载入本机样本</button>
       </div>
       <p v-else-if="localSampleError" class="description">{{ localSampleError }}</p>
@@ -115,7 +117,7 @@ onMounted(async () => {
       </div>
       <p v-if="importMessage" class="import-message" role="status">{{ importMessage }}</p>
       <div class="dataset-actions">
-        <label>历史数据集<select v-model="selectedDatasetId" :disabled="!canImport || !session.historyDatasets.length"><option value="" disabled>请先导入或载入样本</option><option v-for="dataset in session.historyDatasets" :key="dataset.id" :value="dataset.id">{{ dataset.pair }} · {{ dataset.metadata.label }}</option></select></label>
+        <div class="dataset-field"><label for="history-dataset">历史数据集</label><select id="history-dataset" v-model="selectedDatasetId" :disabled="!canImport || !session.historyDatasets.length"><option value="" disabled>请先导入或载入样本</option><option v-for="dataset in session.historyDatasets" :key="dataset.id" :value="dataset.id">{{ dataset.pair }} · {{ dataset.metadata.label }}</option></select></div>
         <button class="button-primary" :disabled="!canImport || !selectedDatasetId" @click="session.startHistorySession(selectedDatasetId)">开始历史练习</button>
       </div>
       <p v-if="selectedDataset" class="description dataset-description">{{ selectedDataset.metadata.recordCount.toLocaleString('zh-CN') }} 根 · {{ formatTimestamp(selectedDataset.metadata.startTimestampMs) }} 至 {{ formatTimestamp(selectedDataset.metadata.endTimestampMs) }}（UTC+8） · {{ selectedDataset.metadata.verified ? '来源已核对' : '真实性未核实' }}</p>
@@ -124,28 +126,38 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.history-panel { margin-top: 18px; border-block: 1px solid var(--line); font-size: .875rem; }
-.history-panel summary { padding: 12px 0; cursor: pointer; width: fit-content; font-weight: 500; }
+.history-panel { margin-top: 16px; border-block: 1px solid var(--line); font-size: .875rem; }
+.history-panel summary { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 9px 0; cursor: pointer; list-style: none; color: var(--text); font-size: .8125rem; font-weight: 500; }
+.history-panel summary::-webkit-details-marker { display: none; }
+.history-panel summary::before { content: ''; flex: none; width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); }
+.history-panel[open] summary::before { transform: rotate(45deg); }
 .history-content { padding: 0 0 16px; min-width: 0; }
-.description { margin: 8px 0; color: var(--muted); font-size: .8125rem; line-height: 1.7; overflow-wrap: anywhere; }
-.csv-form { margin-top: 14px; }
-.import-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: .8125rem; }
-input, select { min-width: 0; width: 100%; min-height: 40px; font-size: .875rem; }
-input[type="file"] { padding: 7px; overflow: hidden; }
-.file-field { min-width: 0; }
-.import-actions, .dataset-actions { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
-.import-actions a { padding-block: 10px; color: var(--blue); }
-.dataset-actions { padding-top: 14px; border-top: 1px solid var(--line); }
-.dataset-actions label { flex: 1 1 220px; }
-button { min-height: 40px; padding: 8px 12px; font-size: .875rem; }
-.import-errors { margin-top: 14px; padding: 12px; color: var(--red); background: var(--red-soft); overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
+.description { margin: 8px 0; color: var(--muted); font-size: .8125rem; line-height: 1.65; overflow-wrap: anywhere; }
+.csv-form { margin-top: 12px; }
+.import-fields { display: grid; gap: 12px; }
+.file-fields { grid-template-columns: 9rem minmax(0, 1fr); }
+.source-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.25fr); margin-top: 12px; }
+.import-field, .dataset-field { display: grid; gap: 6px; min-width: 0; }
+label { min-width: 0; color: var(--muted); font-size: .8125rem; font-weight: 500; }
+input, select { min-width: 0; width: 100%; min-height: 40px; font-size: .875rem; line-height: 1.4; }
+select { padding-right: 2.25rem; text-overflow: ellipsis; }
+input[type="file"] { padding: 4px; overflow: hidden; color: var(--muted); font-size: .8125rem; }
+input[type="file"]::file-selector-button { min-height: 30px; margin-right: 9px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-soft); color: var(--text); font: inherit; font-weight: 500; cursor: pointer; }
+input[type="file"]:disabled::file-selector-button { cursor: default; }
+.import-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
+.import-actions a { display: inline-flex; align-items: center; min-height: 40px; color: var(--blue); font-size: .8125rem; }
+.dataset-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.dataset-actions button { min-width: 8rem; white-space: nowrap; }
+.dataset-actions .button-primary { font-weight: 600; }
+button { min-height: 40px; padding: 8px 12px; font-size: .8125rem; font-weight: 500; }
+.import-errors { margin-top: 12px; padding: 10px 12px; border-radius: 6px; color: var(--red); background: var(--red-soft); font-size: .8125rem; line-height: 1.65; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
 .import-errors ul { margin: 8px 0 0; padding-left: 22px; }
 .import-errors li { padding-block: 3px; }
-.import-message { margin-top: 12px; color: var(--green); line-height: 1.7; }
+.import-message { margin-top: 12px; color: var(--green); font-size: .8125rem; line-height: 1.65; }
 @media (max-width: 600px) {
-  .import-fields { grid-template-columns: minmax(0, 1fr); }
-  input, select, button { min-height: 44px; }
+  .import-fields, .dataset-actions { grid-template-columns: minmax(0, 1fr); }
+  input, select, button, .history-panel summary, .import-actions a { min-height: 44px; }
+  input[type="file"]::file-selector-button { min-height: 34px; }
   .dataset-actions button { width: 100%; }
 }
 </style>
