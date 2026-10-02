@@ -10,23 +10,23 @@ const session = useSessionStore()
   <section v-if="session.accountMetrics" class="account-summary" aria-label="账户概况">
     <div class="account-metric equity-metric">
       <span class="metric-label">账户权益 <InfoTip label="了解账户权益">权益是账户余额加上当前持仓盈亏。平仓后，盈亏会结算到余额。</InfoTip></span>
-      <strong class="number"><span>{{ formatUsd(session.accountMetrics.equityUsd).replace(' USD', '') }}</span><small>USD</small></strong>
+      <strong class="number"><span>{{ formatUsd(session.accountMetrics.equityUsd, false) }}</span><small>USD</small></strong>
     </div>
     <div class="account-metric">
       <span class="metric-label">账户余额</span>
-      <strong class="number" data-testid="balance"><span>{{ formatUsd(session.accountMetrics.balanceUsd).replace(' USD', '') }}</span><small>USD</small></strong>
+      <strong class="number" data-testid="balance"><span>{{ formatUsd(session.accountMetrics.balanceUsd, false) }}</span><small>USD</small></strong>
     </div>
     <div class="account-metric">
       <span class="metric-label">可用资金</span>
-      <strong class="number"><span>{{ formatUsd(session.accountMetrics.availableFundsUsd).replace(' USD', '') }}</span><small>USD</small></strong>
+      <strong class="number"><span>{{ formatUsd(session.accountMetrics.availableFundsUsd, false) }}</span><small>USD</small></strong>
     </div>
     <div class="account-metric">
       <span class="metric-label">资金占用 <InfoTip label="了解资金占用">本练习按交易金额占用资金，平仓后释放。资金占用不表示最大亏损。</InfoTip></span>
-      <strong class="number"><span>{{ formatUsd(session.accountMetrics.reservedFundsUsd).replace(' USD', '') }}</span><small>USD</small></strong>
+      <strong class="number"><span>{{ formatUsd(session.accountMetrics.reservedFundsUsd, false) }}</span><small>USD</small></strong>
     </div>
     <div class="account-metric pnl-metric">
       <span class="metric-label">持仓盈亏</span>
-      <strong class="number" :class="getPnlTone(session.accountMetrics.unrealizedPnlUsd)"><span>{{ formatPnl(session.accountMetrics.unrealizedPnlUsd).replace(' USD', '') }}</span><small>USD</small></strong>
+      <strong class="number" :class="getPnlTone(session.accountMetrics.unrealizedPnlUsd)"><span>{{ formatPnl(session.accountMetrics.unrealizedPnlUsd, false) }}</span><small>USD</small></strong>
     </div>
   </section>
 </template>

@@ -116,7 +116,7 @@ onBeforeUnmount(clearFeedback)
         <div class="position-direction"><strong>{{ position.pair }}</strong><span class="direction-tag" :class="position.direction === 'long' ? 'long-tag' : 'short-tag'">{{ position.direction === 'long' ? '买涨 · 做多' : '买跌 · 做空' }}</span></div>
         <div class="position-profit" :class="getPnlTone(session.accountMetrics.unrealizedPnlUsd)">
           <span class="profit-label">浮动盈亏 <InfoTip label="了解持仓盈亏与点差">持仓盈亏按当前平仓报价计算。刚开仓时的浮亏来自 Bid 与 Ask 的点差，未额外扣费。</InfoTip></span>
-          <strong class="number" data-testid="position-pnl"><span>{{ formatPnl(session.accountMetrics.unrealizedPnlUsd).replace(' USD', '') }}</span><small>USD</small></strong>
+          <strong class="number" data-testid="position-pnl"><span>{{ formatPnl(session.accountMetrics.unrealizedPnlUsd, false) }}</span><small>USD</small></strong>
         </div>
         <dl class="tabular">
           <div><dt>开仓价</dt><dd>{{ formatPrice(position.entryPrice) }}</dd></div>
