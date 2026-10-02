@@ -85,7 +85,8 @@ test('无效金额被解释；切换品种保存旧练习并创建独立资金',
   expect(newSnapshot.id).not.toBe(oldSnapshot.id)
   expect(newSnapshot.pair).toBe('GBP/USD')
   expect(newSnapshot.account.balanceUsd).toBe('10000')
-  await expect(page.getByText('1.5 pip', { exact: true })).toBeVisible()
+  const spreadPips = ((Number(newSnapshot.frames[0]!.quote.askPrice) - Number(newSnapshot.frames[0]!.quote.bidPrice)) / .0001).toFixed(1)
+  await expect(page.locator('.spread strong')).toHaveText(`${spreadPips} pip`)
   const savedSessionCount = await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>(resolve => { const request = indexedDB.open('fx-simulation'); request.onsuccess = () => resolve(request.result) })
     const count = await new Promise<number>(resolve => { const request = database.transaction('sessions').objectStore('sessions').count(); request.onsuccess = () => resolve(request.result) })

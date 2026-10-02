@@ -2,7 +2,8 @@ import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSessionRepository, SessionLoadError } from '../../src/storage/sessionRepository'
 import type { SessionRepository } from '../../src/storage/sessionRepository'
-import { extendSession, makeSession } from './sessionFixture'
+import { validateSessionSnapshot } from '../../src/storage/sessionSnapshot'
+import { extendSession, makeLegacySession, makeSession } from './sessionFixture'
 
 const repositories: SessionRepository[] = []
 function repository(name = `fx-test-${crypto.randomUUID()}`): SessionRepository {
@@ -26,6 +27,23 @@ async function changePointer(name: string, pointer: unknown | null): Promise<voi
       const transaction = database.transaction('settings', 'readwrite')
       if (pointer === null) transaction.objectStore('settings').delete('current')
       else transaction.objectStore('settings').put(pointer, 'current')
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
+async function seedLegacySnapshot(name: string, snapshot: ReturnType<typeof makeLegacySession>): Promise<void> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name, 1)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(['sessions', 'settings'], 'readwrite')
+      transaction.objectStore('sessions').put(snapshot)
+      transaction.objectStore('settings').put({ id: snapshot.id, revision: snapshot.revision }, 'current')
       transaction.oncomplete = () => resolve()
       transaction.onabort = () => reject(transaction.error)
     })
@@ -169,5 +187,32 @@ describe('IndexedDB session repository', () => {
     await expect(created.save({ ...advanced, revision: snapshot.revision })).rejects.toThrow('版本未推进')
     await expect(created.save({ ...advanced, revision: 5 })).rejects.toThrow('保存版本')
     expect(await created.loadCurrent()).toEqual(snapshot)
+  })
+
+  it('retains raw old data until an advanced V2 snapshot commits, including when that transaction fails', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const created = repository(name)
+    await created.loadCurrent()
+    const legacy = makeLegacySession()
+    await seedLegacySnapshot(name, legacy)
+    expect(await created.loadCurrent()).toEqual(legacy)
+    const migrated = validateSessionSnapshot(legacy)
+    await created.save(migrated)
+    expect(await created.loadCurrent()).toEqual(legacy)
+    const advanced = extendSession(migrated)
+    const originalPut = IDBObjectStore.prototype.put
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, input: unknown, key?: IDBValidKey) {
+      const request = originalPut.call(this, input, key)
+      if (this.name === 'sessions') request.addEventListener('success', () => this.transaction.abort())
+      return request
+    })
+    await expect(created.save(advanced)).rejects.toThrow()
+    expect(await created.loadCurrent()).toEqual(legacy)
+    vi.restoreAllMocks()
+    await created.save(advanced)
+    expect(await created.loadCurrent()).toEqual(advanced)
+    expect(advanced.frames.slice(0, legacy.frames.length)).toEqual(legacy.frames)
+    expect(advanced.account).toEqual(legacy.account)
+    expect(advanced.trades).toEqual(legacy.trades)
   })
 })

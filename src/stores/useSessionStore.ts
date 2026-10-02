@@ -4,10 +4,10 @@ import { calculateAccount } from '../engine/account'
 import { MoneyDecimal } from '../engine/decimal'
 import { closePosition, openPosition, settleDepletedAccount } from '../engine/execution'
 import { advanceSimulation, createSimulation } from '../engine/simulationSource'
-import type { CurrencyPair, TradeDirection } from '../engine/types'
+import type { CurrencyPair, SimulationScenario, TradeDirection } from '../engine/types'
 import { createSessionRepository, SessionLoadError } from '../storage/sessionRepository'
 import type { SessionRepository } from '../storage/sessionRepository'
-import { validateSessionSnapshot } from '../storage/sessionSnapshot'
+import { createSimulationConfig, validateSessionSnapshot } from '../storage/sessionSnapshot'
 import type { SessionSnapshot } from '../storage/sessionSnapshot'
 
 export type ReplaySpeed = 1 | 5 | 10
@@ -18,15 +18,16 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败，请重试。'
 }
 
-function createSnapshot(pair: CurrencyPair): SessionSnapshot {
+function createSnapshot(pair: CurrencyPair, scenario: SimulationScenario = 'standard'): SessionSnapshot {
   const random = new Uint32Array(1)
   crypto.getRandomValues(random)
-  const simulation = createSimulation(pair, random[0]!)
+  const simulation = createSimulation(pair, random[0]!, { scenario })
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: crypto.randomUUID(),
     revision: 0,
     pair,
+    simulationConfig: createSimulationConfig(simulation.state),
     sourceState: simulation.state,
     frames: [simulation.frame],
     account: { balanceUsd: '10000', position: null },
@@ -48,6 +49,8 @@ export const useSessionStore = defineStore('session', () => {
   const isDisposed = ref(false)
 
   const currentQuote = computed(() => snapshot.value?.frames.at(-1)?.quote ?? null)
+  const scenario = computed(() => snapshot.value?.sourceState.scenario ?? 'standard')
+  const lastEvent = computed(() => snapshot.value?.sourceState.lastEvent ?? null)
   const accountMetrics = computed(() => snapshot.value && currentQuote.value ? calculateAccount(snapshot.value.account, currentQuote.value) : null)
   const isReady = computed(() => loadStatus.value === 'ready' && snapshot.value !== null)
   const canOperate = computed(() => isReady.value && !isBusy.value && saveStatus.value === 'saved' && !isDisposed.value)
@@ -180,13 +183,16 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
-  async function startNewSession(pair: CurrencyPair = snapshot.value?.pair ?? 'EUR/USD'): Promise<void> {
+  async function startNewSession(
+    pair: CurrencyPair = snapshot.value?.pair ?? 'EUR/USD',
+    nextScenario: SimulationScenario = scenario.value,
+  ): Promise<void> {
     if (!canOperate.value || !snapshot.value) return
     pause()
     isBusy.value = true
     errorMessage.value = ''
     try {
-      if (await persist(snapshot.value)) await persist(createSnapshot(pair))
+      if (await persist(snapshot.value)) await persist(createSnapshot(pair, nextScenario))
     } catch (error) {
       errorMessage.value = errorText(error)
     } finally {
@@ -227,7 +233,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    snapshot, currentQuote, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
+    snapshot, currentQuote, scenario, lastEvent, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
     isEnded, canAdvance, saveStatus, loadStatus, errorMessage, rawRecoveryJson,
     initialize, setSpeed, next, play, pause, openTrade, closeTrade, switchPair,
     startNewSession, retrySave, retryLoad, exportSnapshotJson, dispose, setRepositoryForTesting,

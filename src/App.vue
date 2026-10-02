@@ -4,6 +4,8 @@ import Decimal from 'decimal.js'
 import AccountSummary from './features/trading/AccountSummary.vue'
 import TradePanel from './features/trading/TradePanel.vue'
 import ReplayControls from './features/replay/ReplayControls.vue'
+import SimulationScenario from './features/replay/SimulationScenario.vue'
+import SimulationEventNotice from './features/replay/SimulationEventNotice.vue'
 import TradeJournal from './features/journal/TradeJournal.vue'
 import MarketChart from './features/chart/MarketChart.vue'
 import Icon from './components/Icon.vue'
@@ -101,22 +103,23 @@ onBeforeUnmount(() => {
             <div class="market-identity">
               <span class="pair-mark" aria-hidden="true">{{ session.snapshot.pair === 'EUR/USD' ? '€' : '£' }}<span>$</span></span>
               <div class="pair-select"><label for="currency-pair" class="sr-only">货币对</label><select id="currency-pair" :value="session.snapshot.pair" :disabled="!session.canOperate" @change="changePair"><option>EUR/USD</option><option>GBP/USD</option></select><Icon name="chevron-down" :size="16" /><h2 id="market-title" class="sr-only">行情图表</h2></div>
-              <span class="source-label"><span class="status-dot" />模拟行情 · 1 分钟</span>
-              <InfoTip label="模拟行情说明">行情由本机生成，每根代表一分钟，不是真实历史价格。图表只展示已经推进的行情。新练习会保留旧记录，并使用独立训练资金。</InfoTip>
+              <span class="source-label"><span class="status-dot" />模拟行情 · {{ session.snapshot.sourceState.scenario === 'eventful' ? '事件练习' : '常规练习' }} · 1 分钟</span>
+              <InfoTip label="模拟行情说明">行情由本机生成，每根代表一分钟，不是真实历史价格。图表只展示已经推进的行情。模型参数是训练设定，尚未按历史样本校准，练习表现不代表实盘表现。</InfoTip>
             </div>
             <div class="market-tools">
               <div class="chart-types" role="group" aria-label="图表类型">
                 <button :aria-pressed="chartType === 'line'" @click="chartType = 'line'"><Icon name="chart-line" :size="16" />折线</button>
                 <button :aria-pressed="chartType === 'candlestick'" @click="chartType = 'candlestick'"><Icon name="candles" :size="16" />K 线</button>
               </div>
-              <button class="new-session button-quiet" :disabled="!session.canOperate" @click="session.startNewSession()"><Icon name="plus" :size="16" />新练习</button>
+              <SimulationScenario />
             </div>
           </div>
           <div class="quote-row tabular">
             <div class="quote main-quote"><span class="quote-label">卖出价 <span>Bid</span></span><strong data-testid="bid-price">{{ formattedBid.slice(0, -2) }}<span class="quote-tail">{{ formattedBid.slice(-2) }}</span></strong></div>
             <div class="quote secondary-quote"><span class="quote-label">买入价 <span>Ask</span></span><strong data-testid="ask-price">{{ formatPrice(session.currentQuote.askPrice) }}</strong></div>
-            <div class="spread"><span class="spread-label">点差<InfoTip label="点差说明">Ask 是买入报价，Bid 是卖出报价。两者之差为点差；开仓后立即显示小幅亏损，是买卖报价不同的结果，系统不会重复扣除点差。</InfoTip></span><strong>{{ spreadPips }} <small>pip</small></strong></div>
+            <div class="spread"><span class="spread-label">点差<InfoTip label="点差说明">Ask 是买入报价，Bid 是卖出报价。点差会随模拟时段、波动和事件变化；开仓后立即显示小幅亏损，是买卖报价不同的结果，系统不会重复扣除点差。</InfoTip></span><strong>{{ spreadPips }} <small>pip</small></strong></div>
           </div>
+          <SimulationEventNotice />
           <MarketChart :frames="session.snapshot.frames" :position="session.snapshot.account.position" :trades="session.snapshot.trades" :session-id="session.snapshot.id" :chart-type="chartType" />
           <ReplayControls />
           <a class="trade-jump" href="#trade-amount" @click.prevent="focusTrade">{{ session.snapshot.account.position ? '查看持仓与平仓' : '去下单' }}<Icon name="arrow-right" :size="16" /></a>
@@ -152,13 +155,12 @@ onBeforeUnmount(() => {
 .pair-select { position: relative; }
 .pair-select select { min-height: 40px; font-size: 1.25rem; font-weight: 600; padding: .35rem 1.75rem .35rem 0; border-color: transparent; border-radius: 6px; appearance: none; background: transparent; }
 .pair-select .icon { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
-.source-label { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 5px; color: #40547c; background: var(--blue-soft); font-size: .8125rem; font-weight: 500; white-space: nowrap; }
-.status-dot { width: 5px; height: 5px; background: var(--blue); border-radius: 50%; }
+.source-label { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 8px; border-radius: 5px; color: #40547c; background: var(--blue-soft); font-size: .8125rem; font-weight: 500; line-height: 1.6; }
+.status-dot { width: 5px; height: 5px; flex: none; background: var(--blue); border-radius: 50%; }
 .market-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .chart-types { display: flex; padding: 3px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
 .chart-types button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; border: 0; padding: .35rem .7rem; font-size: .875rem; color: var(--muted); background: transparent; border-radius: 5px; }
 .chart-types button[aria-pressed="true"] { background: var(--surface); color: var(--blue); box-shadow: 0 1px 3px #18212e12; }
-.new-session { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: .875rem; padding-inline: .5rem; }
 .quote-row { display: flex; flex-wrap: wrap; align-items: center; gap: 20px 28px; margin: 24px 0 12px; }
 .quote { display: grid; gap: 5px; min-width: 0; }
 .quote-label { display: flex; align-items: baseline; gap: 8px; font-size: .875rem; color: var(--muted); letter-spacing: 0; }
@@ -202,7 +204,7 @@ onBeforeUnmount(() => {
   .market-tools { justify-content: space-between; }
   .pair-select select { min-height: 44px; font-size: 1.125rem; }
   .pair-mark { width: 34px; height: 34px; }
-  .chart-types button, .new-session { min-height: 44px; }
+  .chart-types button { min-height: 44px; }
   .quote-row { gap: 16px 20px; margin-top: 22px; }
   .main-quote strong { font-size: 2.25rem; }
   .secondary-quote { padding-left: 16px; }

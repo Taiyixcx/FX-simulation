@@ -58,15 +58,57 @@ export interface ClosedPosition {
   trade: TradeRecord
 }
 
+export type SimulationScenario = 'standard' | 'eventful'
+
+export type SimulationEventType = 'economic-data' | 'policy' | 'liquidity'
+
+/** Only published event information; no future outcome is present in the source state. */
+export interface ScheduledSimulationEvent {
+  timestampMs: number
+  type: 'economic-data' | 'policy'
+  label: string
+  expected: string
+}
+
+export interface SimulationEvent {
+  id: string
+  occurredAtMs: number
+  type: SimulationEventType
+  label: string
+  detail: string
+  /** A dimensionless, standardized surprise, not an actual economic statistic. */
+  surprise: number
+}
+
 export interface SimulationState {
-  version: 1
+  version: 2
+  parameterVersion: 1
+  scenario: SimulationScenario
   pair: CurrencyPair
   seed: number
   randomState: number
+  eventRandomState: number
+  scheduleRandomState: number
   frameIndex: number
+  originFrameIndex: number
   startTimestampMs: number
   maxFrames: number
+  /** Quote time immediately before the first generated suffix frame. */
+  initialTimestampMs: number
+  currentTimestampMs: number
+  initialBidPrice: string
+  initialAskPrice: string
   currentBidPrice: string
+  currentAskPrice: string
+  slowLogVariance: number
+  fastLogVariance: number
+  liquidityPressure: number
+  eventVariance: number
+  temporaryDislocationLog: number
+  economicContext: number
+  policySensitivity: number
+  lastEvent: SimulationEvent | null
+  upcomingScheduledEvent: ScheduledSimulationEvent | null
 }
 
 export interface SimulationStep {

@@ -43,14 +43,17 @@ FX-simulation/
 │  │  │  ├─ MarketChart.vue     # 图表生命周期、序列与成交标注
 │  │  │  └─ chartData.ts        # UTC 毫秒类别、OHLC、标记与可见范围适配
 │  │  ├─ replay/
-│  │  │  └─ ReplayControls.vue  # 暂停、单步、调速及不可拖动的进度
+│  │  │  ├─ ReplayControls.vue  # 暂停、单步、调速及不可拖动的进度
+│  │  │  ├─ SimulationScenario.vue # 新会话的练习情景选择
+│  │  │  └─ SimulationEventNotice.vue # 已发生事件与公开计划提示
 │  │  ├─ trading/
 │  │  │  ├─ AccountSummary.vue # 账户指标
 │  │  │  └─ TradePanel.vue      # 金额输入、开仓和平仓
 │  │  └─ journal/
 │  │     └─ TradeJournal.vue    # 当前练习已平仓记录
 │  ├─ engine/
-│  │  ├─ simulationSource.ts    # 确定性逐根模拟行情
+│  │  ├─ simulationSource.ts    # 当前市场模拟、事件与逐根双边报价
+│  │  ├─ simulationParameters.ts # 版本化训练参数与纯规则市场时钟
 │  │  ├─ execution.ts           # 开仓、平仓与权益耗尽结算
 │  │  ├─ account.ts             # 账户估值与交易输入校验
 │  │  ├─ decimal.ts             # 复用的十进制政策与解析
@@ -66,6 +69,8 @@ FX-simulation/
 ├─ tests/
 │  ├─ unit/                    # 纯逻辑、存储与会话测试
 │  └─ e2e/                     # 浏览器关键流程
+├─ scripts/
+│  └─ checkSimulation.mjs      # 多种子内部统计与机械周期检查
 ├─ index.html
 ├─ package.json
 ├─ package-lock.json
@@ -88,7 +93,7 @@ FX-simulation/
 | `components/` | 跨功能的图标、信息提示及焦点处理 | 不持有账户或会话状态 |
 | `engine/` | 行情、成交、账户和纯数值校验 | 不依赖 Vue、Pinia、DOM、计时器或浏览器存储 |
 | `useSessionStore.ts` | 逐根推进、交易、切换、保存状态与重试 | 调用引擎和 storage，拥有并清理回放计时器 |
-| `sessionSnapshot.ts` | 校验不可信快照，重放模拟行情并重建账本 | 复用引擎验证价格和结算，不另写公式 |
+| `sessionSnapshot.ts` | 校验不可信快照、迁移旧可见前缀、重放当前模拟后缀并重建账本 | 不执行旧模型；复用引擎验证当前生成价格和结算，不另写公式 |
 | `sessionRepository.ts` | 数据库连接、事务、当前索引和并发版本检查 | 事务完成才确认保存；不驱动图表或选择成交价 |
 | `styles/`、`priceFormatting.ts` | 共享基础样式和数值展示 | 展示舍入不回写账本 |
 | `tests/` | 业务、事务与浏览器流程验证 | 不存放业务源码或生成产物 |
@@ -121,21 +126,25 @@ Vue 操作 ───────► useSessionStore
 | --- | --- |
 | `MarketQuote` | `timestampMs`、`bidPrice`、`askPrice`、`askSource`；模拟输出来源固定为 `training` |
 | `MarketFrame` | 一根完成的 Bid 分钟 OHLC 与当前 `quote` |
-| `SimulationState` | 版本、品种、种子、随机状态、首根完成时间、总根数、当前进度与 Bid |
-| `createSimulation(pair, seed, options)` | 返回首根 `SimulationStep`，`frameIndex = 0`；配置可指定起始时间与总根数 |
+| `SimulationState` | 模型/参数版本、品种与情景、价格/事件/日程随机状态、起止配置、可见进度与时钟、初始和当前双边报价、波动/流动性/经济背景、最近事件与公开计划事件 |
+| `createSimulation(pair, seed, options)` | 返回首根 `SimulationStep`，`frameIndex = 0`；配置可指定起始完成时间、总根数与情景 |
+| `initializeSimulation(...)`、`createSimulationFromQuote(...)` | 从新练习或旧会话最后双边报价建立当前模型起点；`originFrameIndex` 区分保留前缀与当前生成后缀 |
 | `advanceSimulation(state)` | 返回下一根及新状态；到末尾返回 `null`，不修改旧状态 |
+| `SimulationEvent`、`ScheduledSimulationEvent` | 最近已发生事件含时间、类型、标签、详情与标准化惊喜；计划事件仅时间、类型、标签与预期，无实际结果 |
 | `AccountState`、`Position` | 已结算余额、单笔持仓；持仓包含方向、名义金额、数量、成交价和开仓时间 |
 | `calculateAccount(account, quote)` | 从当前可平仓报价派生账户指标 |
 | `openPosition(...)` | 校验输入和可用资金，返回候选账户 |
 | `closePosition(...)` | 返回已结算账户和单笔 `TradeRecord` |
 | `settleDepletedAccount(...)` | 逐根检查权益耗尽，需要结清时返回同一成交结果，否则为 `null` |
 | `SessionSnapshot` | `schemaVersion`、`id`、`revision`、品种、模拟状态、仅可见帧、账户及成交 |
-| `validateSessionSnapshot(input)` | 校验版本、数据关联、确定性帧序列及完整交易账本 |
+| `validateSessionSnapshot(input)` | 校验版本与关联、按当前模型重放后缀及完整账本；旧格式校验已有可见行情后迁移为当前格式 |
 | `SessionRepository` | `loadCurrent()`、`save(snapshot)`、`close()`；当前快照与索引在同一事务提交 |
 
 `MarketSource` 通用接口、历史源、数据集元信息和 CSV API 仍为 P2 设计项。当前模拟源的纯函数与统一帧类型满足 P1，无需提前包装尚无实际复用的来源层。
 
-快照保存可见帧和模拟随机状态，校验时根据版本、配置和种子重建同一前缀；再按记录引用的可见报价重建账户。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针同时保存会话标识和 `revision`；事务内比较读取时的基准，拒绝其他窗口已经更新后的陈旧写入。
+快照保存可见帧、当前模型全部随机和隐含状态。新会话按模型、参数、配置和种子重建已推进序列；旧格式保留已有行情与账本，校验报价、时间、OHLC、进度和成交关联后，从最后双边报价初始化当前模型，之后仅重放新生成后缀。不保留旧生成算法，也不再通过旧算法重算旧可见前缀；这种迁移校验不是旧行情来源真实性或防篡改证明。恢复后由引擎重算派生指标并暂停。IndexedDB 当前指针同时保存会话标识和 `revision`；事务内比较读取时的基准，拒绝其他窗口已经更新后的陈旧写入。
+
+普通行情、事件结果和计划日程使用独立可保存的随机流，帮助文字及绘图不消耗随机数。情景通过 `startNewSession(pair?, scenario?)` 创建新会话确定；修改选择框不改变当前源。公开事件信息由纯引擎状态提供，页面不会读取未来价格或计划事件结果。具体科学机制、参数与闭市规则见 [数据与交易](03-data-and-trading.md#模拟行情)，研究限制见 [外汇模拟研究](../knowledge/05-foreign-exchange-simulation.md)。
 
 数据库打开请求被其他窗口阻塞后报告失败，原数据保留。该请求若在解除阻塞后才成功，其连接立即关闭，避免错误请求留下未受管理的数据库连接；用户仍可重试读取。
 
@@ -155,7 +164,9 @@ Vue 操作 ───────► useSessionStore
 
 ## 运行与验证配置
 
-已提供 `dev`、`typecheck`、`test`、`test:e2e`、`build`、`start`。开发服务与构建预览均绑定 `127.0.0.1:4173` 并启用严格端口，不能同时运行。`start` 是 Vite 本机构建预览，双击入口留在 P4。
+已提供 `dev`、`typecheck`、`test`、`test:e2e`、`check:simulation`、`build`、`start`。开发服务与构建预览均绑定 `127.0.0.1:4173` 并启用严格端口，不能同时运行。`start` 是 Vite 本机构建预览，双击入口留在 P4。
+
+`check:simulation` 调用当前纯模拟源，比较多个固定种子、品种和情景的内部统计及阶段方向规律；不下载历史数据、不连接行情接口。参数仍待合法历史样本校准，脚本通过不等于真实市场特征已复现，也不能证明完全不可预测。
 
 Vitest 执行 `tests/unit/`；Playwright 执行 `tests/e2e/`，默认自动启动固定地址的开发服务并从 `.vite/playwright` 查找 Chromium。设置 `FX_E2E_PREVIEW=1` 时改为自动执行 `npm run start`，用于已构建版本的浏览器回归与完整回放，运行前必须生成 `dist/`。两种模式均拒绝复用现有服务，避免测试错版本或端口冲突。开发下载缓存放在 `.vite/npm-cache`，不成为运行资源。实际安装与检查命令见 [README](../README.md)，检查结果见 [路线与验收](04-roadmap-and-acceptance.md)。
 
