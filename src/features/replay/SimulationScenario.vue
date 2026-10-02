@@ -9,7 +9,7 @@ const session = useSessionStore()
 const selectedScenario = ref<SimulationScenario>('standard')
 
 watch(() => session.snapshot?.id, () => {
-  selectedScenario.value = session.snapshot?.sourceState.scenario ?? 'standard'
+  selectedScenario.value = session.scenario
 }, { immediate: true })
 
 function startNewSession() {

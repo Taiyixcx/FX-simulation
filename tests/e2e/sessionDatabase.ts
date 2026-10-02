@@ -18,7 +18,7 @@ export async function waitSaved(page: Page): Promise<void> {
 export async function readSnapshot<T = SessionSnapshot>(page: Page, sessionId?: string): Promise<T> {
   const saved = await page.evaluate(async (requestedId) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 2)
+      const request = indexedDB.open('fx-simulation')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
@@ -56,7 +56,7 @@ export async function writeSnapshot(
   }
   await page.evaluate(async ({ snapshot, history, chunkSize }) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 2)
+      const request = indexedDB.open('fx-simulation')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
@@ -82,7 +82,7 @@ export async function writeSnapshot(
 export async function readHistoryChunks(page: Page, sessionId: string): Promise<SavedHistoryChunk[]> {
   return page.evaluate(async (id) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 2)
+      const request = indexedDB.open('fx-simulation')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
@@ -102,7 +102,7 @@ export async function readHistoryChunks(page: Page, sessionId: string): Promise<
 export async function countSessions(page: Page): Promise<number> {
   return page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 2)
+      const request = indexedDB.open('fx-simulation')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })

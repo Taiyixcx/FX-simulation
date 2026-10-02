@@ -31,7 +31,7 @@ test('切换练习情景需创建独立会话，刷新后情景保持且暂停',
   await expect(page.getByLabel('新练习情景')).toHaveValue('eventful')
   await expect(page.getByTestId('progress')).toContainText('已暂停')
   expect(await readSnapshot(page)).toEqual(eventful)
-  await page.getByLabel('货币对').selectOption('GBP/USD')
+  await page.getByLabel('货币对', { exact: true }).selectOption('GBP/USD')
   await waitSaved(page)
   const switched = await readSnapshot(page)
   expect(switched.sourceState.scenario).toBe('eventful')
