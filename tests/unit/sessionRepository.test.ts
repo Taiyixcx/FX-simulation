@@ -2,7 +2,13 @@ import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSessionRepository, SessionLoadError } from '../../src/storage/sessionRepository'
 import type { SessionRepository } from '../../src/storage/sessionRepository'
-import { extendSession, makeSession } from './sessionFixture'
+import { SESSION_FRAME_WINDOW_SIZE, validateSessionSnapshot } from '../../src/storage/sessionSnapshot'
+import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
+import type { MarketFrame } from '../../src/engine/types'
+import { closePosition, openPosition } from '../../src/engine/execution'
+import { advanceSimulation } from '../../src/engine/simulationSource'
+import * as simulationSource from '../../src/engine/simulationSource'
+import { extendSession, makeLegacySession, makeSession } from './sessionFixture'
 
 const repositories: SessionRepository[] = []
 function repository(name = `fx-test-${crypto.randomUUID()}`): SessionRepository {
@@ -17,7 +23,7 @@ afterEach(() => {
 
 async function changePointer(name: string, pointer: unknown | null): Promise<void> {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(name, 1)
+    const request = indexedDB.open(name)
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
   })
@@ -30,6 +36,88 @@ async function changePointer(name: string, pointer: unknown | null): Promise<voi
       transaction.onabort = () => reject(transaction.error)
     })
   } finally { database.close() }
+}
+
+async function seedLegacySnapshot(name: string, snapshot: unknown): Promise<void> {
+  const legacy = snapshot as { id: string; revision: number }
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name, 1)
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('sessions', { keyPath: 'id' })
+      request.result.createObjectStore('settings')
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(['sessions', 'settings'], 'readwrite')
+      transaction.objectStore('sessions').put(snapshot)
+      transaction.objectStore('settings').put({ id: legacy.id, revision: legacy.revision }, 'current')
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
+interface StoredChunk { sessionId: string; chunkIndex: number; frames: MarketFrame[] }
+
+async function openStoredDatabase(name: string): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(name)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function readRecord(name: string, store: string, key: IDBValidKey): Promise<unknown> {
+  const database = await openStoredDatabase(name)
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction(store, 'readonly')
+      const request = transaction.objectStore(store).get(key)
+      let result: unknown
+      request.onsuccess = () => { result = request.result as unknown }
+      transaction.oncomplete = () => resolve(result)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
+async function readChunks(name: string): Promise<StoredChunk[]> {
+  const database = await openStoredDatabase(name)
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction('historyChunks', 'readonly')
+      const request = transaction.objectStore('historyChunks').getAll()
+      let result: StoredChunk[] = []
+      request.onsuccess = () => { result = request.result as StoredChunk[] }
+      transaction.oncomplete = () => resolve(result)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
+async function changeRecord(name: string, store: string, key: IDBValidKey, input: unknown): Promise<void> {
+  const database = await openStoredDatabase(name)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(store, 'readwrite')
+      if (input === undefined) transaction.objectStore(store).delete(key)
+      else transaction.objectStore(store).put(input)
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
+async function saveThrough(created: SessionRepository, input: SessionSnapshot, count: number): Promise<SessionSnapshot> {
+  let snapshot = input
+  for (let remaining = count; remaining > 0; remaining -= SESSION_FRAME_WINDOW_SIZE) {
+    snapshot = extendSession(snapshot, Math.min(remaining, SESSION_FRAME_WINDOW_SIZE))
+    await created.save(snapshot)
+  }
+  return snapshot
 }
 
 describe('IndexedDB session repository', () => {
@@ -79,7 +167,7 @@ describe('IndexedDB session repository', () => {
     await firstRepository.save(second)
     expect(await repository(name).loadCurrent()).toEqual(second)
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(name, 1)
+      const request = indexedDB.open(name)
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
@@ -170,4 +258,215 @@ describe('IndexedDB session repository', () => {
     await expect(created.save({ ...advanced, revision: 5 })).rejects.toThrow('保存版本')
     expect(await created.loadCurrent()).toEqual(snapshot)
   })
+
+  it('keeps schema1 raw data through read-only migration and an aborted first archive commit, then retries once', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const legacy = makeLegacySession()
+    await seedLegacySnapshot(name, legacy)
+    const created = repository(name)
+    const migrated = validateSessionSnapshot(legacy)
+    expect(await created.loadCurrent()).toEqual(migrated)
+    expect(migrated.sourceState.maxFrames).toBeNull()
+    expect(await readRecord(name, 'sessions', legacy.id)).toEqual(legacy)
+    expect(await readChunks(name)).toEqual([])
+    const advanced = extendSession(migrated)
+    const originalPut = IDBObjectStore.prototype.put
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, input: unknown, key?: IDBValidKey) {
+      const request = originalPut.call(this, input, key)
+      if (this.name === 'sessions') request.addEventListener('success', () => this.transaction.abort())
+      return request
+    })
+    await expect(created.save(advanced)).rejects.toThrow()
+    expect(await readRecord(name, 'sessions', legacy.id)).toEqual(legacy)
+    expect(await readChunks(name)).toEqual([])
+    vi.restoreAllMocks()
+    await created.save(advanced)
+    expect(await repository(name).loadCurrent()).toEqual(advanced)
+    expect((await readChunks(name))[0]!.frames).toEqual(advanced.frames)
+    expect(advanced.frames.slice(0, legacy.frames.length)).toEqual(legacy.frames)
+    expect(advanced.account).toEqual(legacy.account)
+    expect(advanced.trades).toEqual(legacy.trades)
+    await created.save(advanced)
+    expect((await readChunks(name))[0]!.frames).toHaveLength(legacy.frames.length + 1)
+  })
+
+  it('migrates an early schema2 state without the search cursor as saved data and preserves the old record until saving', async () => {
+    const original = extendSession(makeSession(), 6)
+    const { frameStartIndex: _frameStartIndex, ...oldFields } = structuredClone(original)
+    const { scheduledSearchThroughTimestampMs: _cursor, ...oldSource } = oldFields.sourceState
+    const legacy = { ...oldFields, schemaVersion: 2, sourceState: oldSource }
+    const name = `fx-test-${crypto.randomUUID()}`
+    await seedLegacySnapshot(name, legacy)
+    const created = repository(name)
+    const loaded = (await created.loadCurrent())!
+    expect(loaded.sourceState).toMatchObject({ version: 2, maxFrames: null, originFrameIndex: original.frames.length, frameIndex: original.sourceState.frameIndex, currentBidPrice: original.sourceState.currentBidPrice })
+    expect(loaded.frames).toEqual(original.frames)
+    expect(await readRecord(name, 'sessions', original.id)).toEqual(legacy)
+    await created.save(loaded)
+    expect(await repository(name).loadCurrent()).toEqual(loaded)
+    expect((await readChunks(name))[0]!.frames).toEqual(original.frames)
+    expect(advanceSimulation(loaded.sourceState)).not.toBeNull()
+  })
+
+  it('rejects corrupt old data without creating archives or changing the original record', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const legacy = makeLegacySession()
+    legacy.trades[0]!.realizedPnlUsd = '999'
+    await seedLegacySnapshot(name, legacy)
+    const created = repository(name)
+    await expect(created.loadCurrent()).rejects.toThrow('盈亏')
+    expect(await readRecord(name, 'sessions', legacy.id)).toEqual(legacy)
+    expect(await readChunks(name)).toEqual([])
+    await expect(created.save(makeSession())).rejects.toThrow('先读取')
+  })
+
+  it('retains every frame and archived trade while restoring only a bounded window across three chunks', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const created = repository(name)
+    await created.loadCurrent()
+    let snapshot = makeSession('EUR/USD', null, 'eventful')
+    snapshot.account = openPosition(snapshot.account, snapshot.frames[0]!.quote, snapshot.pair, 'long', '1000', 'archived-trade')
+    await created.save(snapshot)
+    snapshot = await saveThrough(created, snapshot, SESSION_FRAME_WINDOW_SIZE)
+    const closed = closePosition(snapshot.account, snapshot.frames.at(-1)!.quote)
+    snapshot = { ...snapshot, revision: snapshot.revision + 1, account: closed.account, trades: [closed.trade] }
+    await created.save(snapshot)
+    snapshot = await saveThrough(created, snapshot, SESSION_FRAME_WINDOW_SIZE + 120)
+    expect(snapshot.sourceState.frameIndex + 1).toBe(3001)
+    expect(snapshot.frames).toHaveLength(SESSION_FRAME_WINDOW_SIZE)
+    expect(snapshot.frameStartIndex).toBe(1561)
+    const chunks = await readChunks(name)
+    expect(chunks.map(chunk => [chunk.chunkIndex, chunk.frames.length])).toEqual([[0, 1440], [1, 1440], [2, 121]])
+    expect(chunks.flatMap(chunk => chunk.frames).slice(-1440)).toEqual(snapshot.frames)
+    const restored = (await repository(name).loadCurrent())!
+    expect(restored).toEqual(snapshot)
+    expect(restored.trades[0]!.openedAtMs).toBe(chunks[0]!.frames[0]!.quote.timestampMs)
+    expect(restored.trades[0]!.openedAtMs).toBeLessThan(restored.frames[0]!.quote.timestampMs)
+    expect(advanceSimulation(restored.sourceState)).toEqual(advanceSimulation(snapshot.sourceState))
+  }, 15_000)
+
+  it.each(['tampered old frame', 'missing block', 'extra block', 'incorrect frame count', 'damaged head window', 'damaged source state'] as const)('rejects %s during complete streaming restoration and keeps the stored records', async (kind) => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const created = repository(name)
+    await created.loadCurrent()
+    let snapshot = makeSession('EUR/USD', null)
+    await created.save(snapshot)
+    snapshot = await saveThrough(created, snapshot, 1450)
+    const chunks = await readChunks(name)
+    if (kind === 'missing block') await changeRecord(name, 'historyChunks', [snapshot.id, 0], undefined)
+    else if (kind === 'extra block') await changeRecord(name, 'historyChunks', [snapshot.id, 2], { sessionId: snapshot.id, chunkIndex: 2, frames: [] })
+    else if (kind === 'tampered old frame' || kind === 'incorrect frame count') {
+      const damaged = structuredClone(chunks[0]!)
+      if (kind === 'tampered old frame') damaged.frames[0]!.highPrice = '2'
+      else damaged.frames.pop()
+      await changeRecord(name, 'historyChunks', [snapshot.id, 0], damaged)
+    } else {
+      const damaged = structuredClone(snapshot)
+      if (kind === 'damaged head window') damaged.frames[0]!.highPrice = '2'
+      else damaged.sourceState.fastLogVariance += 0.1
+      await changeRecord(name, 'sessions', snapshot.id, damaged)
+    }
+    const storedHead = await readRecord(name, 'sessions', snapshot.id)
+    const storedChunks = await readChunks(name)
+    let failure: unknown
+    try { await repository(name).loadCurrent() } catch (error) { failure = error }
+    expect(failure).toBeInstanceOf(SessionLoadError)
+    expect((failure as SessionLoadError).rawSnapshot).toEqual(storedHead)
+    expect(await readRecord(name, 'sessions', snapshot.id)).toEqual(storedHead)
+    expect(await readChunks(name)).toEqual(storedChunks)
+  }, 15_000)
+
+  it('rolls back a failed append over a chunk boundary and retries without duplicate frames', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const created = repository(name)
+    await created.loadCurrent()
+    let oldSnapshot = makeSession('EUR/USD', null)
+    await created.save(oldSnapshot)
+    oldSnapshot = await saveThrough(created, oldSnapshot, 1438)
+    const oldChunks = await readChunks(name)
+    const next = extendSession(oldSnapshot, 10)
+    const originalPut = IDBObjectStore.prototype.put
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, input: unknown, key?: IDBValidKey) {
+      const request = originalPut.call(this, input, key)
+      if (this.name === 'sessions') request.addEventListener('success', () => this.transaction.abort())
+      return request
+    })
+    await expect(created.save(next)).rejects.toThrow()
+    expect(await readRecord(name, 'sessions', oldSnapshot.id)).toEqual(oldSnapshot)
+    expect(await readChunks(name)).toEqual(oldChunks)
+    vi.restoreAllMocks()
+    await created.save(next)
+    expect(await repository(name).loadCurrent()).toEqual(next)
+    const chunks = await readChunks(name)
+    expect(chunks.map(chunk => chunk.frames.length)).toEqual([1440, 9])
+    expect(chunks.flatMap(chunk => chunk.frames)).toHaveLength(1449)
+    await created.save(next)
+    expect(await readChunks(name)).toEqual(chunks)
+  }, 15_000)
+
+  it('rejects an unexpected orphan at a new chunk boundary without overwriting any record', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const created = repository(name)
+    await created.loadCurrent()
+    let snapshot = makeSession('EUR/USD', null)
+    await created.save(snapshot)
+    snapshot = await saveThrough(created, snapshot, 1439)
+    const orphan = { sessionId: snapshot.id, chunkIndex: 1, frames: [snapshot.frames.at(-1)!] }
+    await changeRecord(name, 'historyChunks', [snapshot.id, 1], orphan)
+    const chunks = await readChunks(name)
+    const pointer = await readRecord(name, 'settings', 'current')
+    const next = extendSession(snapshot)
+    await expect(created.save(next)).rejects.toThrow('归档')
+    expect(await readRecord(name, 'sessions', snapshot.id)).toEqual(snapshot)
+    expect(await readRecord(name, 'settings', 'current')).toEqual(pointer)
+    expect(await readChunks(name)).toEqual(chunks)
+    await changeRecord(name, 'historyChunks', [snapshot.id, 1], undefined)
+    await created.save(next)
+    expect(await repository(name).loadCurrent()).toEqual(next)
+  }, 15_000)
+
+  it('isolates caller and returned objects from the verified baseline, including nested event state', async () => {
+    const name = `fx-test-${crypto.randomUUID()}`
+    const created = repository(name)
+    await created.loadCurrent()
+    let snapshot = makeSession('EUR/USD', null, 'eventful', Date.UTC(2024, 2, 4, 7, 55))
+    while (!snapshot.sourceState.lastEvent || !snapshot.sourceState.upcomingScheduledEvent) snapshot = extendSession(snapshot)
+    const expected = structuredClone(snapshot)
+    await created.save(snapshot)
+    snapshot.frames[0]!.highPrice = '2'
+    snapshot.sourceState.lastEvent!.detail = 'caller mutation'
+    snapshot.sourceState.upcomingScheduledEvent!.expected = 'caller mutation'
+    const next = extendSession(expected)
+    await created.save(next)
+    const returned = (await created.loadCurrent())!
+    returned.frames[0]!.lowPrice = '2'
+    returned.sourceState.lastEvent!.detail = 'returned mutation'
+    returned.sourceState.upcomingScheduledEvent!.label = 'returned mutation'
+    returned.simulationConfig.initialBidPrice = '2'
+    await created.save(extendSession(next))
+    expect(await created.loadCurrent()).toEqual(extendSession(next))
+  })
+
+  it('validates only added deterministic steps while still rejecting altered overlap, source factors and past ledger', async () => {
+    const created = repository()
+    await created.loadCurrent()
+    let oldSnapshot = makeSession('EUR/USD', null)
+    await created.save(oldSnapshot)
+    oldSnapshot = await saveThrough(created, oldSnapshot, 1450)
+    const next = extendSession(oldSnapshot, 10)
+    const advance = vi.spyOn(simulationSource, 'advanceSimulation')
+    await created.save(next)
+    expect(advance).toHaveBeenCalledTimes(10)
+    advance.mockRestore()
+    for (const mutate of [
+      (copy: SessionSnapshot) => { copy.frames[0]!.highPrice = '2' },
+      (copy: SessionSnapshot) => { copy.sourceState.eventVariance += 0.1 },
+      (copy: SessionSnapshot) => { copy.account.balanceUsd = '9999' },
+    ]) {
+      const damaged = structuredClone(extendSession(next))
+      mutate(damaged)
+      await expect(created.save(damaged)).rejects.toThrow()
+    }
+    expect(await created.loadCurrent()).toEqual(next)
+  }, 15_000)
 })

@@ -4,10 +4,11 @@ import { calculateAccount } from '../engine/account'
 import { MoneyDecimal } from '../engine/decimal'
 import { closePosition, openPosition, settleDepletedAccount } from '../engine/execution'
 import { advanceSimulation, createSimulation } from '../engine/simulationSource'
-import type { CurrencyPair, TradeDirection } from '../engine/types'
+import { MAX_SIMULATION_TIMESTAMP_MS, nextSimulationTimestamp } from '../engine/simulationParameters'
+import type { CurrencyPair, SimulationScenario, TradeDirection } from '../engine/types'
 import { createSessionRepository, SessionLoadError } from '../storage/sessionRepository'
 import type { SessionRepository } from '../storage/sessionRepository'
-import { validateSessionSnapshot } from '../storage/sessionSnapshot'
+import { createSimulationConfig, SESSION_FRAME_WINDOW_SIZE } from '../storage/sessionSnapshot'
 import type { SessionSnapshot } from '../storage/sessionSnapshot'
 
 export type ReplaySpeed = 1 | 5 | 10
@@ -18,15 +19,20 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败，请重试。'
 }
 
-function createSnapshot(pair: CurrencyPair): SessionSnapshot {
+function createSnapshot(pair: CurrencyPair, scenario: SimulationScenario = 'standard', previousSeed?: number): SessionSnapshot {
   const random = new Uint32Array(1)
   crypto.getRandomValues(random)
-  const simulation = createSimulation(pair, random[0]!)
+  // Excluding the last seed keeps adjacent practices distinct even if a draw repeats.
+  const seed = random[0] === previousSeed ? (random[0]! ^ 0x9e3779b9) >>> 0 : random[0]!
+  const simulation = createSimulation(pair, seed, { scenario, maxFrames: null })
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
+    retainedPrefixKind: null,
     id: crypto.randomUUID(),
     revision: 0,
     pair,
+    frameStartIndex: 0,
+    simulationConfig: createSimulationConfig(simulation.state),
     sourceState: simulation.state,
     frames: [simulation.frame],
     account: { balanceUsd: '10000', position: null },
@@ -48,10 +54,14 @@ export const useSessionStore = defineStore('session', () => {
   const isDisposed = ref(false)
 
   const currentQuote = computed(() => snapshot.value?.frames.at(-1)?.quote ?? null)
+  const scenario = computed(() => snapshot.value?.sourceState.scenario ?? 'standard')
+  const lastEvent = computed(() => snapshot.value?.sourceState.lastEvent ?? null)
   const accountMetrics = computed(() => snapshot.value && currentQuote.value ? calculateAccount(snapshot.value.account, currentQuote.value) : null)
   const isReady = computed(() => loadStatus.value === 'ready' && snapshot.value !== null)
   const canOperate = computed(() => isReady.value && !isBusy.value && saveStatus.value === 'saved' && !isDisposed.value)
-  const isEnded = computed(() => snapshot.value !== null && snapshot.value.sourceState.frameIndex >= snapshot.value.sourceState.maxFrames - 1)
+  const isCalendarEnded = computed(() => snapshot.value !== null && nextSimulationTimestamp(snapshot.value.sourceState.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS)
+  const isEnded = computed(() => isCalendarEnded.value || (snapshot.value !== null && snapshot.value.sourceState.maxFrames !== null && snapshot.value.sourceState.frameIndex >= snapshot.value.sourceState.maxFrames - 1))
+  const progressedFrameCount = computed(() => (snapshot.value?.sourceState.frameIndex ?? -1) + 1)
   const canAdvance = computed(() => canOperate.value && !isEnded.value && accountMetrics.value !== null && new MoneyDecimal(accountMetrics.value.equityUsd).gt(0))
 
   function pause(): void {
@@ -85,8 +95,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const raw = await repository.loadCurrent()
       if (raw !== null) {
-        try { rawRecoveryJson.value = JSON.stringify(raw, null, 2) } catch { /* A malformed cyclic record cannot be exported as JSON. */ }
-        snapshot.value = validateSessionSnapshot(raw)
+        snapshot.value = raw
         saveStatus.value = 'saved'
         rawRecoveryJson.value = null
         if (accountMetrics.value && new MoneyDecimal(accountMetrics.value.equityUsd).lte(0)) {
@@ -130,10 +139,12 @@ export const useSessionStore = defineStore('session', () => {
         const next = advanceSimulation(nextSnapshot.sourceState)
         if (!next) { pause(); break }
         const closed = settleDepletedAccount(nextSnapshot.account, next.frame.quote)
+        const frames = [...nextSnapshot.frames, next.frame].slice(-SESSION_FRAME_WINDOW_SIZE)
         nextSnapshot = {
           ...nextSnapshot,
           sourceState: next.state,
-          frames: [...nextSnapshot.frames, next.frame],
+          frameStartIndex: next.state.frameIndex + 1 - frames.length,
+          frames,
           account: closed?.account ?? nextSnapshot.account,
           trades: closed ? [...nextSnapshot.trades, closed.trade] : nextSnapshot.trades,
         }
@@ -142,7 +153,8 @@ export const useSessionStore = defineStore('session', () => {
           pause()
           break
         }
-        if (next.state.frameIndex >= next.state.maxFrames - 1) { pause(); break }
+        if ((next.state.maxFrames !== null && next.state.frameIndex >= next.state.maxFrames - 1)
+          || nextSimulationTimestamp(next.state.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS) { pause(); break }
       }
       return { ...nextSnapshot, revision: current.revision + 1 }
     })
@@ -180,13 +192,16 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
-  async function startNewSession(pair: CurrencyPair = snapshot.value?.pair ?? 'EUR/USD'): Promise<void> {
+  async function startNewSession(
+    pair: CurrencyPair = snapshot.value?.pair ?? 'EUR/USD',
+    nextScenario: SimulationScenario = scenario.value,
+  ): Promise<void> {
     if (!canOperate.value || !snapshot.value) return
     pause()
     isBusy.value = true
     errorMessage.value = ''
     try {
-      if (await persist(snapshot.value)) await persist(createSnapshot(pair))
+      if (await persist(snapshot.value)) await persist(createSnapshot(pair, nextScenario, snapshot.value.sourceState.seed))
     } catch (error) {
       errorMessage.value = errorText(error)
     } finally {
@@ -227,8 +242,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    snapshot, currentQuote, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
-    isEnded, canAdvance, saveStatus, loadStatus, errorMessage, rawRecoveryJson,
+    snapshot, currentQuote, scenario, lastEvent, progressedFrameCount, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
+    isEnded, isCalendarEnded, canAdvance, saveStatus, loadStatus, errorMessage, rawRecoveryJson,
     initialize, setSpeed, next, play, pause, openTrade, closeTrade, switchPair,
     startNewSession, retrySave, retryLoad, exportSnapshotJson, dispose, setRepositoryForTesting,
   }

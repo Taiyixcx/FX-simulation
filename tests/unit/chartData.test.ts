@@ -145,6 +145,12 @@ describe('chart viewport', () => {
     expect(advanceViewport({ from: 20, to: 39 }, 100, 1440, false)).toEqual({ from: 20, to: 39 })
   })
 
+  it('preserves historical timestamps when the loaded frame window rolls forward', () => {
+    expect(advanceViewport({ from: 400, to: 479 }, 1440, 1440, false, 10)).toEqual({ from: 390, to: 469 })
+    expect(advanceViewport({ from: 1360, to: 1439 }, 1440, 1440, true, 10)).toEqual({ from: 1360, to: 1439 })
+    expect(advanceViewport({ from: 0, to: 79 }, 1440, 1440, false, 10)).toEqual({ from: 0, to: 69 })
+  })
+
   it('clamps a saved window when the dataset becomes shorter', () => {
     expect(advanceViewport({ from: 70, to: 99 }, 100, 20, false)).toEqual({ from: 19, to: 19 })
   })

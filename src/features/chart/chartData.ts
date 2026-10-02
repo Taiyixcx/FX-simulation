@@ -128,8 +128,12 @@ export function advanceViewport(
   oldFrameCount: number,
   frameCount: number,
   isFollowingLatest: boolean,
+  removedFrameCount = 0,
 ): ChartViewport {
-  if (!isFollowingLatest) return clampViewport(previous, frameCount)
+  if (!isFollowingLatest) return clampViewport({
+    from: previous.from - removedFrameCount,
+    to: previous.to - removedFrameCount,
+  }, frameCount)
   if (previous.from === 0 && previous.to === oldFrameCount - 1
     && oldFrameCount < DEFAULT_VISIBLE_FRAMES) return initialViewport(frameCount)
   const visibleCount = Math.max(1, previous.to - previous.from + 1)

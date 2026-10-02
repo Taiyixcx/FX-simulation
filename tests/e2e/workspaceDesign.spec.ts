@@ -1,30 +1,13 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { closePosition, openPosition } from '../../src/engine/execution'
+import { advanceSimulation } from '../../src/engine/simulationSource'
 import { extendSession, makeSession } from '../unit/sessionFixture'
-import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
-
-async function waitSaved(page: Page) {
-  await expect(page.getByTestId('save-status')).toHaveText('已保存到本机')
-}
+import { readHistoryChunks, readSnapshot, waitSaved, writeSnapshot } from './sessionDatabase'
 
 async function restoreProgressedSession(page: Page, frameCount: number) {
-  const snapshot = extendSession(makeSession('EUR/USD', 1440), frameCount - 1)
-  await page.evaluate(async (savedSnapshot: SessionSnapshot) => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 1)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const transaction = database.transaction(['settings', 'sessions'], 'readwrite')
-        transaction.objectStore('sessions').put(savedSnapshot)
-        transaction.objectStore('settings').put({ id: savedSnapshot.id, revision: savedSnapshot.revision }, 'current')
-        transaction.oncomplete = () => resolve()
-        transaction.onabort = () => reject(transaction.error)
-      })
-    } finally { database.close() }
-  }, snapshot)
+  const snapshot = extendSession(makeSession('EUR/USD', null), frameCount - 1)
+  await writeSnapshot(page, snapshot)
   await page.reload()
   await waitSaved(page)
 }
@@ -180,14 +163,16 @@ for (const width of [1440, 1024, 390]) {
   })
 }
 
-test('最高回放速度完成1440根，界面可操作且运行资源均来自本机', async ({ page }, testInfo) => {
-  test.setTimeout(210_000)
+test('持续播放超过1440根后手动暂停，保留全部历史并刷新继续原练习', async ({ page }, testInfo) => {
+  test.setTimeout(240_000)
   const requests: string[] = []
   const errors: string[] = []
   page.on('request', request => requests.push(request.url()))
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/')
   await waitSaved(page)
+  const initial = await readSnapshot(page)
+  expect(initial.sourceState.maxFrames).toBeNull()
   const chart = page.getByTestId('market-chart')
   const instanceId = await chart.getAttribute('data-chart-instance-id')
   await page.getByLabel('速度').selectOption('10')
@@ -202,15 +187,147 @@ test('最高回放速度完成1440根，界面可操作且运行资源均来自�
   await page.keyboard.press('Escape')
   const interactionMs = Date.now() - interactionStartedAt
   expect(interactionMs).toBeLessThan(2000)
-  await expect(page.getByTestId('progress')).toContainText('1440 / 1440 根 · 已结束', { timeout: 180_000 })
+  await expect.poll(async () => {
+    const progress = await page.getByTestId('progress').textContent()
+    return Number(progress?.match(/已推进 (\d+) 根/)?.[1] ?? 0)
+  }, { timeout: 180_000, intervals: [1000] }).toBeGreaterThanOrEqual(1501)
+  await expect(page.getByTestId('progress')).toContainText('播放中')
+  await page.getByRole('button', { name: '暂停', exact: true }).focus()
+  await page.keyboard.press('Enter')
   await waitSaved(page)
+  const paused = await readSnapshot(page)
+  const frameCount = paused.sourceState.frameIndex + 1
+  expect(frameCount).toBeGreaterThan(1440)
+  expect(paused.frames).toHaveLength(1440)
+  expect(paused.frameStartIndex).toBe(frameCount - 1440)
+  expect(paused.sourceState.seed).toBe(initial.sourceState.seed)
+  await expect(page.getByTestId('progress')).toContainText(`已推进 ${frameCount} 根 · 已暂停`)
   await expect(chart).toHaveAttribute('data-chart-instance-id', instanceId!)
   await expect(chart).toHaveAttribute('data-frame-count', '1440')
-  await expect(page.getByRole('button', { name: '播放', exact: true })).toBeDisabled()
+  await expect(chart).toHaveAttribute('data-first-timestamp', String(paused.frames[0]!.quote.timestampMs))
+  await expect(chart).toHaveAttribute('data-last-timestamp', String(paused.sourceState.currentTimestampMs))
+  await expect(page.getByRole('button', { name: '播放', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '下一根', exact: true })).toBeEnabled()
+  const chunks = await readHistoryChunks(page, paused.id)
+  expect(chunks).toHaveLength(Math.ceil(frameCount / 1440))
+  expect(chunks.map(chunk => chunk.chunkIndex)).toEqual(chunks.map((_, index) => index))
+  expect(chunks.slice(0, -1).every(chunk => chunk.frames.length === 1440)).toBe(true)
+  const history = chunks.flatMap(chunk => chunk.frames)
+  expect(history).toHaveLength(frameCount)
+  expect(history[0]).toEqual(initial.frames[0])
+  expect(history.slice(paused.frameStartIndex)).toEqual(paused.frames)
+  expect(history.every((frame, index) => index === 0 || frame.quote.timestampMs > history[index - 1]!.quote.timestampMs)).toBe(true)
+  await page.waitForTimeout(700)
+  expect(await readSnapshot(page)).toEqual(paused)
+  await page.screenshot({ path: 'test-results/design-continuous-over-1440.png', fullPage: true })
+  await page.reload()
+  await waitSaved(page)
+  expect(await readSnapshot(page)).toEqual(paused)
+  await expect(page.getByTestId('progress')).toContainText(`已推进 ${frameCount} 根 · 已暂停`)
+  const expectedNext = advanceSimulation(paused.sourceState)!
+  await page.getByRole('button', { name: '下一根', exact: true }).click()
+  await waitSaved(page)
+  const continued = await readSnapshot(page)
+  expect(continued.sourceState).toEqual(expectedNext.state)
+  expect(continued.frames.at(-1)).toEqual(expectedNext.frame)
+  expect(continued.id).toBe(paused.id)
+  expect(continued.frameStartIndex).toBe(paused.frameStartIndex + 1)
+  expect((await readHistoryChunks(page, continued.id)).flatMap(chunk => chunk.frames)).toEqual([...history, expectedNext.frame])
   expect(errors).toEqual([])
   expect(requests.filter(url => new URL(url).origin !== 'http://127.0.0.1:4173')).toEqual([])
   await expect(page.locator('body')).not.toContainText(/TradingView|Lightweight Charts|Copyright|Apache ECharts/)
   await expect(page.locator('a[href^="http"]')).toHaveCount(0)
-  await page.screenshot({ path: 'test-results/design-complete-1440.png', fullPage: true })
-  await testInfo.attach('回放与交互耗时', { body: JSON.stringify({ replayMs: Date.now() - startedAt, interactionMs, frameCount: 1440, instanceId }), contentType: 'application/json' })
+  await testInfo.attach('持续行情与交互耗时', { body: JSON.stringify({ replayMs: Date.now() - startedAt, interactionMs, frameCount, chartFrameCount: paused.frames.length, archivedFrameCount: history.length, instanceId }), contentType: 'application/json' })
+})
+
+test('行情移出最近窗口时保留仍在窗口内的观察时间，过旧范围贴近保留边界', async ({ page }) => {
+  await page.goto('/')
+  await waitSaved(page)
+  await restoreProgressedSession(page, 1440)
+  const chart = page.getByTestId('market-chart')
+  const instanceId = await chart.getAttribute('data-chart-instance-id')
+  const firstTimestamp = await chart.getAttribute('data-first-timestamp')
+  await chart.focus()
+  await page.keyboard.press('ArrowLeft')
+  await page.keyboard.press('ArrowLeft')
+  const startTime = await chart.getAttribute('data-viewport-start-time')
+  const endTime = await chart.getAttribute('data-viewport-end-time')
+  await page.getByRole('button', { name: '下一根', exact: true }).click()
+  await waitSaved(page)
+  await expect(chart).toHaveAttribute('data-frame-count', '1440')
+  await expect(chart).toHaveAttribute('data-viewport-start-time', startTime!)
+  await expect(chart).toHaveAttribute('data-viewport-end-time', endTime!)
+  await expect(chart).toHaveAttribute('data-chart-instance-id', instanceId!)
+  await page.getByRole('button', { name: 'K 线', exact: true }).click()
+  await expect(chart).toHaveAttribute('data-viewport-start-time', startTime!)
+  await expect(chart).toHaveAttribute('data-viewport-end-time', endTime!)
+  await chart.focus()
+  for (let step = 0; step < 100 && Number(await chart.getAttribute('data-viewport-from')) > 0; step += 1) {
+    await page.keyboard.press('ArrowLeft')
+  }
+  await expect(chart).toHaveAttribute('data-viewport-from', '0')
+  await page.getByRole('button', { name: '下一根', exact: true }).click()
+  await waitSaved(page)
+  await expect(chart).toHaveAttribute('data-viewport-from', '0')
+  const snapshot = await readSnapshot(page)
+  await expect(chart).toHaveAttribute('data-viewport-start-time', String(snapshot.frames[0]!.quote.timestampMs))
+  expect(await chart.getAttribute('data-first-timestamp')).not.toBe(firstTimestamp)
+  await chart.focus()
+  await page.keyboard.press('End')
+  await expect(chart).toHaveAttribute('data-viewport-end-time', String(snapshot.sourceState.currentTimestampMs))
+  await expect(chart).toHaveAttribute('data-chart-instance-id', instanceId!)
+  const history = (await readHistoryChunks(page, snapshot.id)).flatMap(chunk => chunk.frames)
+  expect(String(history[0]!.quote.timestampMs)).toBe(firstTimestamp)
+  expect(history).toHaveLength(1442)
+})
+
+test('成交记录分页保留全部记录，桌面及窄屏可以用键盘查看最早交易', async ({ page }) => {
+  const snapshot = makeSession('EUR/USD', null)
+  const quote = snapshot.frames[0]!.quote
+  for (let index = 1; index <= 45; index += 1) {
+    const opened = openPosition(snapshot.account, quote, snapshot.pair, index % 2 ? 'long' : 'short', String(100 + index), `journal-trade-${index}`)
+    const closed = closePosition(opened, quote)
+    snapshot.account = closed.account
+    snapshot.trades.push(closed.trade)
+  }
+  await page.goto('/')
+  await waitSaved(page)
+  await writeSnapshot(page, snapshot)
+  await page.reload()
+  await waitSaved(page)
+  const journal = page.locator('#trade-journal')
+  const pagination = page.getByRole('navigation', { name: '成交记录分页', exact: true })
+  await expect(journal.locator('.trade-count')).toHaveText('45')
+  await expect(journal.locator('tbody tr')).toHaveCount(20)
+  await expect(journal.locator('tbody tr').first()).toContainText('145.00')
+  await expect(pagination.getByRole('status')).toHaveText('第 1 / 3 页')
+  await expect(pagination.getByRole('button', { name: '上一页', exact: true })).toBeDisabled()
+  const nextPage = pagination.getByRole('button', { name: '下一页', exact: true })
+  await nextPage.focus()
+  await page.keyboard.press('Enter')
+  await expect(pagination.getByRole('status')).toHaveText('第 2 / 3 页')
+  await expect(journal.locator('tbody tr')).toHaveCount(20)
+  await expect(journal.locator('tbody tr').first()).toContainText('125.00')
+  await page.setViewportSize({ width: 390, height: 900 })
+  await nextPage.focus()
+  await page.keyboard.press('Enter')
+  await expect(pagination.getByRole('status')).toHaveText('第 3 / 3 页')
+  await expect(journal.locator('.mobile-trade')).toHaveCount(5)
+  await expect(nextPage).toBeDisabled()
+  const oldest = journal.locator('.mobile-trade').last()
+  await expect(oldest.locator('summary')).toContainText('101.00')
+  await oldest.locator('summary').focus()
+  await page.keyboard.press('Enter')
+  await expect(oldest).toHaveAttribute('open', '')
+  await expect(oldest.getByText('开仓价', { exact: true })).toBeVisible()
+  await page.addStyleTag({ content: 'html { font-size: 32px !important; }' })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await pagination.getByRole('button', { name: '上一页', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  await expect(pagination.getByRole('status')).toHaveText('第 2 / 3 页')
+  expect(await readSnapshot(page)).toEqual(snapshot)
+  await page.reload()
+  await waitSaved(page)
+  await expect(pagination.getByRole('status')).toHaveText('第 1 / 3 页')
+  expect((await readSnapshot(page)).trades).toHaveLength(45)
 })

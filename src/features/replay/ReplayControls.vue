@@ -5,8 +5,9 @@ import Icon from '../../components/Icon.vue'
 import InfoTip from '../../components/InfoTip.vue'
 
 const session = useSessionStore()
-const frameCount = computed(() => session.snapshot?.frames.length ?? 0)
-const maxFrames = computed(() => session.snapshot?.sourceState.maxFrames ?? 0)
+const frameCount = computed(() => session.snapshot ? session.snapshot.sourceState.frameIndex + 1 : 0)
+const maxFrames = computed(() => session.snapshot?.sourceState.maxFrames ?? null)
+const isContinuous = computed(() => maxFrames.value === null)
 const progressPercent = computed(() => maxFrames.value ? frameCount.value / maxFrames.value * 100 : 0)
 const playbackState = computed(() => session.isEnded ? '已结束' : session.isPlaying ? '播放中' : '已暂停')
 const isIncrementalProgress = ref(false)
@@ -36,11 +37,11 @@ function togglePlayback() {
       <div class="speed-control">
         <label for="replay-speed">速度</label>
         <select id="replay-speed" :value="session.speed" :disabled="!session.isReady" @change="changeSpeed"><option :value="1">1 根/秒</option><option :value="5">5 根/秒</option><option :value="10">10 根/秒</option></select>
-        <InfoTip label="了解行情回放">播放会持续推进已完成的分钟行情；下一根只推进一次。速度表示每秒推进的分钟根数，暂停后可继续按当前报价交易。</InfoTip>
+        <InfoTip label="了解行情回放">新练习默认持续生成分钟行情，可随时暂停；下一根只推进一次。速度表示每秒推进的分钟根数，暂停后可继续按当前报价交易。刷新后保留原练习和走势，并保持暂停。</InfoTip>
       </div>
-      <span class="progress number" data-testid="progress"><span>{{ frameCount }} / {{ maxFrames }} 根</span><span class="playback-state" :class="{ 'is-playing': session.isPlaying }"> · {{ playbackState }}</span></span>
+      <span class="progress number" data-testid="progress"><span v-if="isContinuous">已推进 {{ frameCount }} 根</span><span v-else>{{ frameCount }} / {{ maxFrames }} 根</span><span class="playback-state" :class="{ 'is-playing': session.isPlaying }"> · {{ playbackState }}</span></span>
     </div>
-    <div class="progress-track" role="progressbar" aria-label="已推进行情" :aria-valuenow="frameCount" :aria-valuemin="0" :aria-valuemax="maxFrames" :aria-valuetext="`${frameCount} / ${maxFrames} 根，${playbackState}`"><span :class="{ 'is-incremental': isIncrementalProgress }" :style="{ width: `${progressPercent}%` }" /></div>
+    <div v-if="maxFrames !== null" class="progress-track" role="progressbar" aria-label="已推进行情" :aria-valuenow="frameCount" :aria-valuemin="0" :aria-valuemax="maxFrames" :aria-valuetext="`${frameCount} / ${maxFrames} 根，${playbackState}`"><span :class="{ 'is-incremental': isIncrementalProgress }" :style="{ width: `${progressPercent}%` }" /></div>
   </div>
 </template>
 

@@ -1,38 +1,13 @@
 import { expect, test } from '@playwright/test'
-import type { Page } from '@playwright/test'
-import type { SessionSnapshot } from '../../src/storage/sessionSnapshot'
-
-async function waitSaved(page: Page) {
-  await expect(page.getByTestId('save-status')).toHaveText('已保存到本机')
-}
-
-async function readSnapshot(page: Page): Promise<SessionSnapshot> {
-  return page.evaluate(async () => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('fx-simulation', 1)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    try {
-      return await new Promise<SessionSnapshot>((resolve, reject) => {
-        const transaction = database.transaction(['settings', 'sessions'], 'readonly')
-        const pointer = transaction.objectStore('settings').get('current')
-        pointer.onsuccess = () => {
-          const snapshot = transaction.objectStore('sessions').get((pointer.result as { id: string }).id)
-          snapshot.onsuccess = () => resolve(snapshot.result as SessionSnapshot)
-        }
-        transaction.onabort = () => reject(transaction.error)
-      })
-    } finally { database.close() }
-  })
-}
+import { countSessions, readSnapshot, waitSaved } from './sessionDatabase'
 
 test('多空交易、逐根推进及刷新恢复同一快照并暂停', async ({ page }) => {
   const pageErrors: string[] = []
   page.on('pageerror', error => pageErrors.push(error.message))
   await page.goto('/')
   await waitSaved(page)
-  await expect(page.getByTestId('progress')).toContainText('1 / 1440 根 · 已暂停')
+  await expect(page.getByTestId('progress')).toContainText('已推进 1 根 · 已暂停')
+  await expect(page.getByRole('progressbar', { name: '已推进行情' })).toHaveCount(0)
   await page.getByRole('button', { name: '买涨（做多）', exact: true }).click()
   await waitSaved(page)
   await expect(page.getByTestId('position-pnl')).toContainText('亏损 -')
@@ -44,7 +19,7 @@ test('多空交易、逐根推进及刷新恢复同一快照并暂停', async ({
   await expect(page.getByRole('button', { name: '播放', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: '下一根', exact: true }).click()
   await waitSaved(page)
-  await expect(page.getByTestId('progress')).toContainText('2 / 1440')
+  await expect(page.getByTestId('progress')).toContainText('已推进 2 根')
   await page.getByRole('button', { name: '平仓', exact: true }).click()
   await waitSaved(page)
   const closed = await readSnapshot(page)
@@ -85,14 +60,10 @@ test('无效金额被解释；切换品种保存旧练习并创建独立资金',
   expect(newSnapshot.id).not.toBe(oldSnapshot.id)
   expect(newSnapshot.pair).toBe('GBP/USD')
   expect(newSnapshot.account.balanceUsd).toBe('10000')
-  await expect(page.getByText('1.5 pip', { exact: true })).toBeVisible()
-  const savedSessionCount = await page.evaluate(async () => {
-    const database = await new Promise<IDBDatabase>(resolve => { const request = indexedDB.open('fx-simulation'); request.onsuccess = () => resolve(request.result) })
-    const count = await new Promise<number>(resolve => { const request = database.transaction('sessions').objectStore('sessions').count(); request.onsuccess = () => resolve(request.result) })
-    database.close()
-    return count
-  })
-  expect(savedSessionCount).toBe(2)
+  const spreadPips = ((Number(newSnapshot.frames[0]!.quote.askPrice) - Number(newSnapshot.frames[0]!.quote.bidPrice)) / .0001).toFixed(1)
+  await expect(page.locator('.spread strong')).toHaveText(`${spreadPips} pip`)
+  expect(await countSessions(page)).toBe(2)
+  expect(await readSnapshot(page, oldSnapshot.id)).toEqual(oldSnapshot)
 })
 
 test('写入失败保留未保存持仓，重试只保存一次交易', async ({ page }) => {
