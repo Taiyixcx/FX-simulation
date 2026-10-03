@@ -18,6 +18,8 @@ P2 已实现 CSV 全量校验、数据集本机保存和历史回放。展开图
 
 旧会话列表、备注、完整备份恢复和三步引导留在 P3，双击 `start.cmd` 留在 P4。保存失败时可重试或导出当前 JSON 快照，导出文件暂不能从界面导入。持续生成受到模拟时钟范围和浏览器本机存储容量约束，保存失败即暂停并保留原数据，不自动删除早期行情；历史故障快照引用数据集，也不作为完整备份。
 
+2026-10-03 已完成新一轮产品调研与现状审阅，在 `feature/opt` 形成 [修补与优化计划](overview/06-repair-and-optimization-plan.md)：优先处理异常点差开仓边界、旧会话找回、完整备份恢复、复盘及大历史性能。本阶段只整理研究与文档，相关代码功能尚未实施；最新检查的超时与测试收尾限制见计划的验证记录。
+
 ## 本机启动
 
 使用 Node.js 24.x 与 npm；本次开发环境为 Node.js 24.18.0、npm 11.16.0。其他支持版本以 `package.json` 的 `engines` 为准。首次安装需要网络，PowerShell 在项目目录执行：
@@ -97,5 +99,6 @@ Remove-Item Env:\FX_E2E_PREVIEW
 | [路线与验收](overview/04-roadmap-and-acceptance.md) | P0–P4 阶段、完成条件及实际验证 |
 | [整体页面美化方案](overview/05-interface-redesign.md) | 整体构图、设计依据与取舍 |
 | [交互设计样稿](overview/05-interface-preview.html) | 可本机独立打开的示例界面，不执行交易或写入练习 |
+| [修补与优化计划](overview/06-repair-and-optimization-plan.md) | 本轮问题证据、分批任务、依赖、数据兼容与验收；尚未实施 |
 | [参考知识库](knowledge/README.md) | 外汇、网页工程和同类产品的官方资料 |
 | [开发规范](AGENTS.md) | 文件组织、命名、文档同步与验证约束 |
