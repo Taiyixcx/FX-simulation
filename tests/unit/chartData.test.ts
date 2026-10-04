@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { MarketFrame, Position, TradeRecord } from '../../src/engine/types'
+import { aggregateMarketFrames } from '../../src/engine/frameAggregation'
 import {
   advanceViewport,
   buildTradeMarkers,
@@ -8,6 +9,7 @@ import {
   formatTimeAxisTick,
   getVisiblePriceRange,
   initialViewport,
+  mapTradeMarkersToFrames,
   toCandlestickPoint,
   toLinePoint,
   toTimestampKey,
@@ -94,6 +96,19 @@ describe('chart data adapter', () => {
     const futurePosition = { ...LONG_POSITION, openedAtMs: FIRST_TIMESTAMP_MS + 120_000 }
     expect(buildTradeMarkers(frames, futurePosition, [trade]).map(marker => marker.id)).toEqual(['position-long-open'])
     expect(buildTradeMarkers([], LONG_POSITION, [trade])).toEqual([])
+  })
+
+  it('maps M5 markers to observed groups without changing actual execution time or price', () => {
+    const frames = Array.from({ length: 7 }, (_, index) => createFrame(FIRST_TIMESTAMP_MS + index * 60_000))
+    const grouped = aggregateMarketFrames(frames, 'M5')
+    const markers = buildTradeMarkers(frames, LONG_POSITION, [])
+    const mapped = mapTradeMarkersToFrames(markers, grouped)
+    expect(mapped[0]!.timestampMs).toBe(FIRST_TIMESTAMP_MS)
+    expect(mapped[0]!.timestampKey).toBe(String(FIRST_TIMESTAMP_MS + 4 * 60_000))
+    expect(mapped[0]!.price).toBe(Number(LONG_POSITION.entryPrice))
+    expect(markers[0]!.timestampKey).toBe(String(FIRST_TIMESTAMP_MS))
+    const range = getVisiblePriceRange(grouped, { from: 0, to: 0 }, 'line', mapped)
+    expect(range.maxValue).toBeGreaterThan(Number(LONG_POSITION.entryPrice))
   })
 
   it('includes a closed Ask above the Bid curve with enough scale padding for its marker', () => {

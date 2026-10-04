@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { calculateAccount } from '../../src/engine/account'
 import { MoneyDecimal } from '../../src/engine/decimal'
 import { EngineError } from '../../src/engine/errors'
-import { closePosition, openPosition, settleDepletedAccount } from '../../src/engine/execution'
+import { closePosition, openPosition, prepareOpenPosition, previewPositionRisk, previewTradeRisk, settleDepletedAccount } from '../../src/engine/execution'
 import type { AccountState, MarketQuote, TradeDirection } from '../../src/engine/types'
 
 const startTimestampMs = Date.UTC(2024, 2, 4, 0, 1)
@@ -113,5 +113,58 @@ describe('equity depletion', () => {
     expect(account.balanceUsd).toBe('-10.00')
     expect(trades).toHaveLength(1)
     expect(trades[0]?.exitPrice).toBe('2.1')
+  })
+})
+
+describe('new-order admission and executable-side risk preview', () => {
+  it.each(['2', '3'])('rejects zero/negative entry equity at Ask %s without changing legacy ledger reconstruction', (askPrice) => {
+    const wideQuote = makeQuote('1', askPrice)
+    const legacy = openPosition(emptyAccount, wideQuote, 'EUR/USD', 'short', '10000', 'legacy-wide')
+    expect(new MoneyDecimal(calculateAccount(legacy, wideQuote).equityUsd).lte(0)).toBe(true)
+    expect(() => prepareOpenPosition(emptyAccount, wideQuote, 'EUR/USD', 'short', '10000', 'new-wide')).toThrow('点差成本')
+    const preview = previewTradeRisk(emptyAccount, wideQuote, 'EUR/USD', 'short', '10000')
+    expect(preview.canOpen).toBe(false)
+    expect(preview.rejectionMessage).toContain('耗尽')
+    expect(emptyAccount.position).toBeNull()
+    expect(closePosition(legacy, wideQuote).account.position).toBeNull()
+  })
+
+  it('uses raw positive entry equity even when the displayed cents would be zero', () => {
+    const quote = makeQuote('0.00000001', '1')
+    expect(prepareOpenPosition(emptyAccount, quote, 'EUR/USD', 'long', '10000', 'tiny-positive').position).not.toBeNull()
+    const preview = previewTradeRisk(emptyAccount, quote, 'EUR/USD', 'long', '10000')
+    expect(preview.entryEquityUsd).toBe('0.0001')
+    expect(preview.canOpen).toBe(true)
+  })
+
+  it.each(['long', 'short'] as const)('matches %s immediate settlement and hypothetical executable exit', direction => {
+    const candidate = prepareOpenPosition(emptyAccount, entryQuote, 'EUR/USD', direction, '1000', 'preview-match')
+    const hypotheticalExitPrice = direction === 'long' ? '1.1009' : '1.0992'
+    const hypotheticalQuote = makeQuote(hypotheticalExitPrice, hypotheticalExitPrice)
+    const preview = previewTradeRisk(emptyAccount, entryQuote, 'EUR/USD', direction, '1000', hypotheticalExitPrice)
+    expect(preview.quantityBaseUnits).toBe(candidate.position!.quantityBaseUnits)
+    expect(preview.usdPerPip).toBe(new MoneyDecimal(candidate.position!.quantityBaseUnits).times('0.0001').toFixed())
+    expect(preview.spreadPips).toBe('1')
+    expect(preview.exitQuoteSide).toBe(direction === 'long' ? 'bid' : 'ask')
+    expect(preview.immediateClosePnlUsd).toBe(closePosition(candidate, entryQuote).trade.realizedPnlUsd)
+    expect(preview.hypotheticalPnlUsd).toBe(closePosition(candidate, hypotheticalQuote).trade.realizedPnlUsd)
+  })
+
+  it('accepts zero spreads and rejects invalid hypothetical prices without changing the account', () => {
+    const quote = makeQuote('1', '1')
+    expect(previewTradeRisk(emptyAccount, quote, 'GBP/USD', 'short', '1000').immediateClosePnlUsd).toBe('0.00')
+    expect(() => previewTradeRisk(emptyAccount, quote, 'EUR/USD', 'long', '1000', '0')).toThrow('正数')
+    expect(() => previewTradeRisk(emptyAccount, quote, 'EUR/USD', 'long', '1000', '1e2')).toThrow('十进制')
+    expect(previewTradeRisk(emptyAccount, quote, 'EUR/USD', 'long', '1000', '').hypotheticalPnlUsd).toBeNull()
+  })
+
+  it('previews a live short at the latest Ask without admitting another order or changing it', () => {
+    const account = prepareOpenPosition(emptyAccount, entryQuote, 'EUR/USD', 'short', '1100', 'live-preview')
+    const latest = makeQuote('1.099', '1.0991', startTimestampMs + 60_000)
+    const before = structuredClone(account)
+    const preview = previewPositionRisk(account, latest, '1.0981')
+    expect(preview).toMatchObject({ direction: 'short', exitQuoteSide: 'ask', usdPerPip: '0.1', immediateClosePnlUsd: '0.90', hypotheticalPnlUsd: '1.90', currentEquityUsd: '10000.9' })
+    expect(account).toEqual(before)
+    expect(() => previewPositionRisk(emptyAccount, entryQuote)).toThrow('没有')
   })
 })

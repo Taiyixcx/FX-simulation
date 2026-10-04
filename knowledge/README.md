@@ -20,7 +20,7 @@
 - 开发工作台：先读工程笔记 E01–E03、E06–E12，结合 [架构](../overview/02-architecture.md) 确认职责，按 [阶段与验收](../overview/04-roadmap-and-acceptance.md) 推进。
 - 改进交互：比较产品笔记 P01–P15；整页层次、回放分组和按需帮助集中在 P12–P15，本地字体见工程 E19。再看 [产品与设计](../overview/01-product-and-design.md)，选择适合个人练习的组织方式，避免照搬商业平台的完整体系。
 - 改进视觉质感：阅读 [V01–V19 设计研究](04-interface-design.md)，结合 [整体美化方案与样稿](../overview/05-interface-redesign.md)；实际参数只在 [产品与设计](../overview/01-product-and-design.md) 维护，研究和样稿不代替运行验证。
-- 研究生成行情：阅读 [S01–S06 模拟依据](05-foreign-exchange-simulation.md)，区分研究支持的机制、尚未历史校准的训练参数和已执行的内部检查；业务参数只在数据与交易文档维护。
+- 研究生成行情：阅读 [S01–S06 模拟依据](05-foreign-exchange-simulation.md)，区分有限历史估计的普通波动/点差、仍属训练设定的事件等参数及内部诊断；业务参数只在数据与交易文档维护。
 - 安排后续优化：阅读 [R01–R21 补充研究](06-product-and-training-research.md) 与 [修补计划](../overview/06-repair-and-optimization-plan.md)，区分已复现问题、阶段缺口和待验证实验，按依赖与验收分批推进。
 
 ## 如何使用资料

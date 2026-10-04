@@ -11,7 +11,7 @@ globalThis.indexedDB = indexedDB
 globalThis.IDBKeyRange = IDBKeyRange
 const dataDirectory = resolve('public/data')
 const results = []
-const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'error' })
+const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom', logLevel: 'error' })
 
 function localPath(filename) {
   if (typeof filename !== 'string' || !/^[A-Za-z0-9_-]+\.csv$/.test(filename)) throw new Error('样本 manifest 只接受本机数据目录下的 CSV 文件名。')

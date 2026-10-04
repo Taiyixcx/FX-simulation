@@ -1,10 +1,52 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useSessionStore } from '../../stores/useSessionStore'
 import { formatUsd, formatPrice, formatPnl, getPnlTone, formatTimestamp } from '../../priceFormatting'
 import Icon from '../../components/Icon.vue'
+import PracticeStatisticsPanel from './PracticeStatisticsPanel.vue'
+import TradeAnnotationEditor from './TradeAnnotationEditor.vue'
+import type { TradeRecord } from '../../engine/types'
+import type { TradeAnnotationInput } from '../../storage/sessionMetadata'
 
 const session = useSessionStore()
+const emit = defineEmits<{ 'review-trade': [trade: TradeRecord, action?: 'open' | 'close'] }>()
+const selectedTradeId = ref<string | null>(null)
+const selectedTrade = computed(() => session.snapshot?.trades.find(trade => trade.id === selectedTradeId.value))
+const annotationEditor = ref<InstanceType<typeof TradeAnnotationEditor> | null>(null)
+const annotationMessage = ref('')
+const annotationHasError = ref(false)
+const isSavingAnnotation = ref(false)
+function reviewTrade(trade: TradeRecord) { selectedTradeId.value = trade.id; annotationMessage.value = ''; annotationHasError.value = false; emit('review-trade', trade) }
+async function saveAnnotation(input: TradeAnnotationInput) {
+  if (!selectedTrade.value || isSavingAnnotation.value) return
+  const tradeId = selectedTrade.value.id
+  isSavingAnnotation.value = true
+  annotationMessage.value = ''
+  annotationHasError.value = false
+  try {
+    const saved = await session.saveTradeAnnotation(tradeId, input)
+    if (selectedTrade.value?.id !== tradeId) return
+    if (saved) {
+      annotationMessage.value = '备注已保存到本机。'
+      await nextTick()
+      annotationEditor.value?.reload()
+    } else { annotationHasError.value = true; annotationMessage.value = session.libraryErrorMessage || '备注没有保存，当前输入保留。' }
+  } finally { isSavingAnnotation.value = false }
+}
+async function reloadAnnotation() {
+  const tradeId = selectedTrade.value?.id
+  isSavingAnnotation.value = true
+  annotationHasError.value = false
+  try {
+    const loaded = await session.refreshCurrentMetadata()
+    await nextTick()
+    if (selectedTrade.value?.id !== tradeId) return
+    if (loaded) { annotationEditor.value?.reload(); annotationMessage.value = '已读取保存版本。' }
+    else { annotationHasError.value = true; annotationMessage.value = session.libraryErrorMessage || '读取失败，当前输入保留。' }
+  }
+  catch (error) { annotationHasError.value = true; annotationMessage.value = error instanceof Error ? error.message : '读取失败，当前输入保留。' }
+  finally { isSavingAnnotation.value = false }
+}
 const currentPage = ref(1)
 const PAGE_SIZE = 20
 const tradeCount = computed(() => session.snapshot?.trades.length ?? 0)
@@ -14,6 +56,7 @@ const trades = computed(() => {
   return (session.snapshot?.trades ?? []).slice(Math.max(0, endIndex - PAGE_SIZE), endIndex).reverse()
 })
 watch([() => session.snapshot?.id, tradeCount], () => { currentPage.value = 1 })
+watch(() => session.snapshot?.id, () => { selectedTradeId.value = null; annotationMessage.value = '' })
 </script>
 
 <template>
@@ -37,7 +80,7 @@ watch([() => session.snapshot?.id, tradeCount], () => { currentPage.value = 1 })
               <td class="numeric-cell number"><span class="cell-primary">{{ formatPrice(trade.entryPrice) }}</span><span class="cell-secondary">{{ formatTimestamp(trade.openedAtMs) }}</span></td>
               <td class="numeric-cell number"><span class="cell-primary">{{ formatPrice(trade.exitPrice) }}</span><span class="cell-secondary">{{ formatTimestamp(trade.closedAtMs) }}</span></td>
               <td class="numeric-cell number realized-pnl" :class="getPnlTone(trade.realizedPnlUsd)">{{ formatPnl(trade.realizedPnlUsd) }}</td>
-              <td class="close-reason">{{ trade.reason === 'manual' ? '手动平仓' : '权益耗尽' }}</td>
+              <td class="close-reason">{{ trade.reason === 'manual' ? '手动平仓' : '权益耗尽' }}<button type="button" class="review-trade-button button-quiet" :aria-label="`复盘${formatTimestamp(trade.openedAtMs)}的交易`" @click="reviewTrade(trade)">复盘 / 备注</button></td>
             </tr>
           </tbody>
         </table>
@@ -50,6 +93,7 @@ watch([() => session.snapshot?.id, tradeCount], () => { currentPage.value = 1 })
             <span class="sr-only">查看成交详情</span>
           </summary>
           <dl class="trade-details number"><div><dt>开仓价</dt><dd>{{ formatPrice(trade.entryPrice) }}</dd></div><div><dt>平仓价</dt><dd>{{ formatPrice(trade.exitPrice) }}</dd></div><div><dt>开仓时间</dt><dd>{{ formatTimestamp(trade.openedAtMs) }}</dd></div><div><dt>平仓时间</dt><dd>{{ formatTimestamp(trade.closedAtMs) }}</dd></div><div><dt>平仓原因</dt><dd>{{ trade.reason === 'manual' ? '手动平仓' : '权益耗尽' }}</dd></div></dl>
+          <button type="button" class="review-trade-button button-outline" :aria-label="`复盘${formatTimestamp(trade.openedAtMs)}的交易`" @click="reviewTrade(trade)">复盘 / 备注</button>
         </details>
       </div>
       <nav v-if="pageCount > 1" class="journal-pagination" aria-label="成交记录分页">
@@ -58,11 +102,27 @@ watch([() => session.snapshot?.id, tradeCount], () => { currentPage.value = 1 })
         <button type="button" class="button-outline" :disabled="currentPage === pageCount" @click="currentPage += 1">下一页</button>
       </nav>
     </template>
+    <section v-if="selectedTrade" class="trade-review" aria-label="选中交易复盘">
+      <div class="review-heading"><h3>{{ selectedTrade.direction === 'long' ? '买涨' : '买跌' }} · {{ formatTimestamp(selectedTrade.openedAtMs) }}</h3><div class="review-actions"><button type="button" class="button-quiet" @click="emit('review-trade', selectedTrade, 'open')">定位开仓</button><button type="button" class="button-quiet" @click="emit('review-trade', selectedTrade, 'close')">定位平仓</button><button type="button" class="button-quiet" @click="selectedTradeId = null">收起备注</button></div></div>
+      <p class="review-outcome">结果：<strong :class="getPnlTone(selectedTrade.realizedPnlUsd)">{{ formatPnl(selectedTrade.realizedPnlUsd) }}</strong></p>
+      <p class="review-note">本笔按 {{ selectedTrade.direction === 'long' ? 'Ask 买入' : 'Bid 卖出' }} {{ formatPrice(selectedTrade.entryPrice) }} 开仓，按 {{ selectedTrade.direction === 'long' ? 'Bid 卖出' : 'Ask 买入' }} {{ formatPrice(selectedTrade.exitPrice) }} 平仓。持仓数量固定为 {{ selectedTrade.quantityBaseUnits }} {{ selectedTrade.pair.split('/')[0] }}；USD 盈亏按实际报价结算到分。</p>
+      <p class="review-note">过程：回看当时信息与事前计划，再记录实际退出原因。盈亏不等于是否遵守计划；买涨按 Ask 入、Bid 出，买跌按 Bid 入、Ask 出，点差不再另外扣费。</p>
+      <TradeAnnotationEditor :key="selectedTrade.id" ref="annotationEditor" :trade-id="selectedTrade.id" :annotation="session.tradeAnnotations[selectedTrade.id] ?? null" :disabled="isSavingAnnotation || !session.canOperate" :is-closed="true" :message="annotationMessage" :has-error="annotationHasError" @save="saveAnnotation" @reload="reloadAnnotation" />
+    </section>
+    <PracticeStatisticsPanel :statistics="session.practiceStatistics" :is-loading="session.isStatisticsLoading" :error="session.statisticsError" :selected-trade-id="selectedTradeId ?? undefined" @request="session.loadPracticeStatistics()" />
   </section>
 </template>
 
 <style scoped>
 .trade-journal { padding: 22px 24px 24px; border-top: 1px solid var(--line); min-width: 0; scroll-margin-top: 24px; }
+.review-trade-button { display: block; margin-top: 5px; min-height: 36px; font-size: .8125rem; padding: 5px 8px; }
+.trade-review { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+.review-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.review-heading h3 { margin: 0; font-size: .9375rem; }
+.review-heading button { min-height: 44px; font-size: .8125rem; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.review-outcome { margin: 8px 0; font-size: .875rem; }
+.review-note { color: var(--muted); font-size: .8125rem; line-height: 1.7; overflow-wrap: anywhere; }
 .journal-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; color: var(--muted); font-size: .875rem; }
 .journal-pagination button { min-height: 44px; }
 .journal-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }

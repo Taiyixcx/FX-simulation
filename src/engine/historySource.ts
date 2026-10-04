@@ -1,6 +1,6 @@
 import { validateCurrencyPair } from './account'
 import { decimalToString, readDecimalString } from './decimal'
-import type { HistoryDataset, HistoryDatasetSummary, HistoryQuoteType, HistoryState, HistoryStep } from './historyTypes'
+import type { HistoryDataset, HistoryDatasetSummary, HistoryProcessingControls, HistoryQuoteType, HistoryState, HistoryStep } from './historyTypes'
 import type { MarketFrame } from './types'
 
 export const HISTORY_MAX_FRAMES = 200_000
@@ -11,6 +11,28 @@ const verifiedDatasets = new WeakSet<HistoryDataset>()
 
 function fail(message: string): never {
   throw new Error(message)
+}
+
+export function getHistoryProcessingBatchSize(controls?: HistoryProcessingControls): number {
+  const batchSize = controls?.batchSize ?? 256
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 4096) fail('历史处理分批根数须为 1 至 4,096。')
+  return batchSize
+}
+
+export function throwIfHistoryCancelled(controls?: HistoryProcessingControls): void {
+  if (controls?.signal?.aborted) {
+    const error = new Error('已取消历史数据处理，原有数据保持不变。')
+    error.name = 'AbortError'
+    throw error
+  }
+}
+
+export async function checkpointHistoryProcessing(controls: HistoryProcessingControls, processed: number, total: number, phase: 'reading' | 'validating' | 'fingerprint'): Promise<void> {
+  throwIfHistoryCancelled(controls)
+  controls.onProgress?.(processed, total, phase)
+  throwIfHistoryCancelled(controls)
+  await controls.yieldControl?.()
+  throwIfHistoryCancelled(controls)
 }
 
 export function validateHistoryFrame(frame: MarketFrame, previousTimestampMs = -1): void {
@@ -33,8 +55,10 @@ export function validateHistoryFrame(frame: MarketFrame, previousTimestampMs = -
   if (!bid.eq(close) || ask.lt(bid)) fail('历史报价必须以 Bid 收盘价及不低于 Bid 的 Ask 交易。')
 }
 
-export async function sha256Text(text: string): Promise<string> {
+export async function sha256Text(text: string, controls?: HistoryProcessingControls): Promise<string> {
+  throwIfHistoryCancelled(controls)
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  throwIfHistoryCancelled(controls)
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
@@ -44,14 +68,25 @@ export function getHistoryQuoteType(frames: readonly MarketFrame[]): HistoryQuot
   return hasSource && hasTraining ? 'mixed' : hasSource ? 'source' : 'training'
 }
 
-export async function calculateHistoryFingerprint(pair: HistoryDataset['pair'], frames: readonly MarketFrame[]): Promise<string> {
-  const records = frames.map((frame) => [
-    frame.quote.timestampMs,
-    ...[frame.openPrice, frame.highPrice, frame.lowPrice, frame.closePrice, frame.quote.bidPrice, frame.quote.askPrice]
-      .map((price) => decimalToString(readDecimalString(price, '历史报价', 'invalid-quote'))),
-    frame.quote.askSource,
-  ])
-  return sha256Text(JSON.stringify([pair, records]))
+export async function calculateHistoryFingerprint(pair: HistoryDataset['pair'], frames: readonly MarketFrame[], controls?: HistoryProcessingControls): Promise<string> {
+  const batchSize = getHistoryProcessingBatchSize(controls)
+  throwIfHistoryCancelled(controls)
+  const records: string[] = []
+  if (controls) await checkpointHistoryProcessing(controls, 0, frames.length, 'fingerprint')
+  for (let index = 0; index < frames.length; index += 1) {
+    const frame = frames[index]!
+    records.push(JSON.stringify([
+      frame.quote.timestampMs,
+      ...[frame.openPrice, frame.highPrice, frame.lowPrice, frame.closePrice, frame.quote.bidPrice, frame.quote.askPrice]
+        .map((price) => decimalToString(readDecimalString(price, '历史报价', 'invalid-quote'))),
+      frame.quote.askSource,
+    ]))
+    if (controls && ((index + 1) % batchSize === 0 || index === frames.length - 1)) await checkpointHistoryProcessing(controls, index + 1, frames.length, 'fingerprint')
+  }
+  // Serialize each record in its batch. Joining preserves the exact original
+  // JSON.stringify([pair, records]) bytes without serializing a large object graph.
+  const canonical = `[${JSON.stringify(pair)},[${records.join(',')}]]`
+  return sha256Text(canonical, controls)
 }
 
 export function getHistoryDatasetId(pair: HistoryDataset['pair'], fingerprint: string): string {
@@ -67,6 +102,7 @@ export function validateHistoryDatasetSummary(input: unknown): HistoryDatasetSum
     || summary.id !== getHistoryDatasetId(summary.pair as HistoryDataset['pair'], summary.fingerprint)) fail('历史数据集标识或校验信息无效。')
   if (!summary.metadata || typeof summary.metadata !== 'object' || Array.isArray(summary.metadata)) fail('历史来源元信息无效。')
   const metadata = summary.metadata as Record<string, unknown>
+  if (metadata.restoredVerificationClaim !== undefined && typeof metadata.restoredVerificationClaim !== 'boolean') fail('备份来源核对声明须为布尔值。')
   for (const key of ['label', 'sourceName', 'sourceUrl', 'originalTimezone', 'conversionNotes', 'conversionVersion', 'licenseNotes'] as const) {
     if (typeof metadata[key] !== 'string' || metadata[key].length > 2_000) fail('历史来源文字无效或过长。')
   }
@@ -93,6 +129,7 @@ export function validateHistoryDatasetSummary(input: unknown): HistoryDatasetSum
     metadata: {
       label: metadata.label as string, sourceName: metadata.sourceName as string, sourceUrl,
       originalTimezone: metadata.originalTimezone as string, verified: metadata.verified as boolean,
+      ...(metadata.restoredVerificationClaim !== undefined ? { restoredVerificationClaim: metadata.restoredVerificationClaim as boolean } : {}),
       period: 'M1', quoteType: metadata.quoteType as HistoryQuoteType, startTimestampMs, endTimestampMs, recordCount,
       conversionNotes: metadata.conversionNotes as string, conversionVersion: metadata.conversionVersion as string,
       licenseNotes: metadata.licenseNotes as string, fileSha256: metadata.fileSha256 as string,
@@ -101,13 +138,22 @@ export function validateHistoryDatasetSummary(input: unknown): HistoryDatasetSum
 }
 
 /** Validate persisted/untrusted content before it becomes available for replay. */
-export async function validateHistoryDataset(dataset: HistoryDataset): Promise<void> {
+export async function validateHistoryDataset(dataset: HistoryDataset, controls?: HistoryProcessingControls): Promise<void> {
+  const batchSize = getHistoryProcessingBatchSize(controls)
+  throwIfHistoryCancelled(controls)
   if (verifiedDatasets.has(dataset)) return
   if (!dataset || typeof dataset !== 'object') fail('历史数据集无效。')
   validateHistoryDatasetSummary(dataset)
   if (!Array.isArray(dataset.frames) || dataset.frames.length < 1 || dataset.frames.length > HISTORY_MAX_FRAMES) fail(`历史数据集须含 1 至 ${HISTORY_MAX_FRAMES.toLocaleString('en-US')} 根行情。`)
+  // Seal identities before yielding. Each checked row is frozen immediately;
+  // an unchecked row may still change, but must then pass its own full check.
+  Object.freeze(dataset.frames)
+  Object.freeze(dataset.metadata)
+  Object.freeze(dataset)
   let previousTimestampMs = -1
-  for (const frame of dataset.frames) {
+  if (controls) await checkpointHistoryProcessing(controls, 0, dataset.frames.length, 'validating')
+  for (let index = 0; index < dataset.frames.length; index += 1) {
+    const frame = dataset.frames[index]!
     validateHistoryFrame(frame, previousTimestampMs)
     if (frame.quote.askSource === 'training') {
       const expectedAsk = readDecimalString(frame.closePrice, '历史 Bid', 'invalid-quote')
@@ -115,22 +161,17 @@ export async function validateHistoryDataset(dataset: HistoryDataset): Promise<v
       if (!expectedAsk.eq(frame.quote.askPrice)) fail('历史训练 Ask 与对应品种的固定训练点差不一致。')
     }
     previousTimestampMs = frame.quote.timestampMs
+    Object.freeze(frame.quote)
+    Object.freeze(frame)
+    if (controls && ((index + 1) % batchSize === 0 || index === dataset.frames.length - 1)) await checkpointHistoryProcessing(controls, index + 1, dataset.frames.length, 'validating')
   }
   const metadata = dataset.metadata
   if (!metadata || typeof metadata !== 'object' || typeof metadata.verified !== 'boolean' || metadata.period !== 'M1'
     || metadata.startTimestampMs !== dataset.frames[0].quote.timestampMs
     || metadata.endTimestampMs !== dataset.frames.at(-1)!.quote.timestampMs
     || metadata.recordCount !== dataset.frames.length || metadata.quoteType !== getHistoryQuoteType(dataset.frames)) fail('历史数据集元信息与实际行情不一致。')
-  // Freeze before yielding to the digest: callers cannot change the checked input
-  // while an asynchronous validation is in progress.
-  for (const frame of dataset.frames) {
-    Object.freeze(frame.quote)
-    Object.freeze(frame)
-  }
-  Object.freeze(dataset.frames)
-  Object.freeze(dataset.metadata)
-  Object.freeze(dataset)
-  if (dataset.fingerprint !== await calculateHistoryFingerprint(dataset.pair, dataset.frames)) fail('历史数据集内容校验失败，不能继续回放。')
+  if (dataset.fingerprint !== await calculateHistoryFingerprint(dataset.pair, dataset.frames, controls)) fail('历史数据集内容校验失败，不能继续回放。')
+  throwIfHistoryCancelled(controls)
   verifiedDatasets.add(dataset)
 }
 
@@ -161,10 +202,26 @@ function getStep(dataset: HistoryDataset, frameIndex: number): HistoryStep {
   }
 }
 
-/** Expose the first completed minute only, regardless of the total dataset size. */
-export function createHistory(dataset: HistoryDataset): HistoryStep {
+/** The selected completed minute is the first tradable quote in a new practice. */
+export function createHistory(dataset: HistoryDataset, startFrameIndex = 0): HistoryStep {
   requireVerifiedDataset(dataset)
-  return getStep(dataset, 0)
+  if (!Number.isSafeInteger(startFrameIndex) || startFrameIndex < 0 || startFrameIndex >= dataset.frames.length) fail('历史练习起点须为数据集中有效的分钟索引。')
+  return getStep(dataset, startFrameIndex)
+}
+
+/** Select the first available completed quote at or after a requested UTC minute. */
+export function findHistoryStartIndex(dataset: HistoryDataset, timestampMs: number): number {
+  requireVerifiedDataset(dataset)
+  if (!Number.isSafeInteger(timestampMs) || timestampMs < 0 || timestampMs % HISTORY_MINUTE_MS !== 0) fail('历史练习起点须为有效 UTC 完整分钟。')
+  let lower = 0
+  let upper = dataset.frames.length
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2)
+    if (dataset.frames[middle]!.quote.timestampMs < timestampMs) lower = middle + 1
+    else upper = middle
+  }
+  if (lower === dataset.frames.length) fail('所选时间晚于历史数据末尾。')
+  return lower
 }
 
 export function advanceHistory(state: HistoryState, dataset: HistoryDataset): HistoryStep | null {

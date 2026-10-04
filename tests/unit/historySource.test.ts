@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseHistoryCsv } from '../../src/engine/historyCsv'
-import { advanceHistory, createHistory, validateHistoryDataset, validateHistoryState } from '../../src/engine/historySource'
+import { advanceHistory, createHistory, validateHistoryDataset, validateHistoryDatasetSummary, validateHistoryState } from '../../src/engine/historySource'
 
 const csv = [
   'timestamp,open,high,low,close,ask',
@@ -47,5 +47,47 @@ describe('finite historical replay source', () => {
     expect(() => createHistory(dataset)).toThrow('全量校验')
     await validateHistoryDataset(dataset)
     expect(createHistory(dataset).state.frameIndex).toBe(0)
+  })
+
+  it('preserves a backup verification claim independently from local verification and license text', async () => {
+    const dataset = await parseHistoryCsv(csv, 'EUR/USD')
+    const input = { ...dataset, metadata: { ...dataset.metadata, verified: false, restoredVerificationClaim: true, licenseNotes: '原许可说明'.repeat(100) } }
+    const summary = validateHistoryDatasetSummary(input)
+    expect(summary.metadata.verified).toBe(false)
+    expect(summary.metadata.restoredVerificationClaim).toBe(true)
+    expect(summary.metadata.licenseNotes).toBe(input.metadata.licenseNotes)
+    expect(validateHistoryDatasetSummary({ ...input, metadata: { ...input.metadata, restoredVerificationClaim: false } }).metadata.restoredVerificationClaim).toBe(false)
+    expect(() => validateHistoryDatasetSummary({ ...input, metadata: { ...input.metadata, restoredVerificationClaim: 'yes' } })).toThrow('布尔')
+  })
+
+  it('never certifies a cancelled dataset and freezes checked rows before a processing yield', async () => {
+    const dataset = structuredClone(await parseHistoryCsv(csv, 'EUR/USD'))
+    const signal = { aborted: false }
+    let sawFrozenCheckedRow = false
+    await expect(validateHistoryDataset(dataset, {
+      signal, batchSize: 1, yieldControl: async () => {},
+      onProgress: (processed, _total, phase) => {
+        if (phase === 'validating' && processed === 1) {
+          sawFrozenCheckedRow = Object.isFrozen(dataset.frames[0]!.quote) && Object.isFrozen(dataset.frames[0])
+          expect(() => { dataset.frames[0]!.quote.bidPrice = '9' }).toThrow()
+          signal.aborted = true
+        }
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(sawFrozenCheckedRow).toBe(true)
+    expect(() => createHistory(dataset)).toThrow('全量校验')
+    await validateHistoryDataset(dataset)
+    expect(createHistory(dataset).state.frameIndex).toBe(0)
+  })
+
+  it('checks an unchecked row changed during a batch yield rather than trusting the old fingerprint', async () => {
+    const dataset = structuredClone(await parseHistoryCsv(csv, 'EUR/USD'))
+    await expect(validateHistoryDataset(dataset, {
+      batchSize: 1, yieldControl: async () => {},
+      onProgress: (processed, _total, phase) => {
+        if (phase === 'validating' && processed === 1) dataset.frames[2]!.quote.askPrice = '1.10016'
+      },
+    })).rejects.toThrow('内容校验失败')
+    expect(() => createHistory(dataset)).toThrow('全量校验')
   })
 })

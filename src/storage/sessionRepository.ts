@@ -1,17 +1,49 @@
 import { copySessionSnapshot, createSessionHistoryValidator, SESSION_FRAME_WINDOW_SIZE, validateSessionSnapshot, validateSessionTransition } from './sessionSnapshot'
 import type { SessionSnapshot } from './sessionSnapshot'
 import type { MarketFrame } from '../engine/types'
-import { validateHistoryDataset, validateHistoryDatasetSummary } from '../engine/historySource'
-import type { HistoryDataset, HistoryDatasetSummary } from '../engine/historyTypes'
+import { throwIfHistoryCancelled, validateHistoryDataset, validateHistoryDatasetSummary } from '../engine/historySource'
+import type { HistoryDataset, HistoryDatasetSummary, HistoryProcessingControls } from '../engine/historyTypes'
 import { copyPracticeSnapshot, isHistoricalSnapshot, validateHistoricalSnapshot, validateHistoricalTransition } from './historicalSessionSnapshot'
 import type { HistoricalSessionSnapshot, PracticeSnapshot } from './historicalSessionSnapshot'
+import { createSessionSummary, createSessionTrainingContext, readLibraryState, reviseTradeAnnotation, validateTradeAnnotation, validateSessionObservation, validateSessionSummary, validateSessionTrainingContext } from './sessionMetadata'
+import type { LibraryState, OnboardingStatus, PendingTradeAnnotation, SessionSummary, TradeAnnotation, TradeAnnotationInput, SessionObservation, SessionTrainingContext, TrainingContextInput } from './sessionMetadata'
+import { BACKUP_MAX_BYTES, checkCancelled, validatePracticeBackup } from './sessionBackup'
+import { yieldToEventLoop } from '../yieldToEventLoop'
+import type { BackupPreview, PracticeBackup, ValidatedBackup } from './sessionBackup'
+
+export interface LoadedSession { snapshot: PracticeSnapshot; dataset: HistoryDataset | null }
+export interface DatasetListEntry { id: string; summary: HistoryDatasetSummary | null; errorMessage: string | null }
+export interface RestoreResult { sessionIds: string[]; currentSessionId: string | null; loadedSession: LoadedSession | null }
+export interface StorageHealth { usageBytes: number | null; quotaBytes: number | null; isPersistent: boolean | null }
 
 export interface SessionRepository {
   loadCurrent(): Promise<PracticeSnapshot | null>
-  save(snapshot: PracticeSnapshot): Promise<void>
-  importDataset(dataset: HistoryDataset): Promise<void>
+  loadCurrentWithSource(): Promise<LoadedSession | null>
+  loadSession(id: string): Promise<LoadedSession | null>
+  activateSession(id: string): Promise<LoadedSession>
+  listSessions(): Promise<SessionSummary[]>
+  save(snapshot: PracticeSnapshot, annotation?: PendingTradeAnnotation, trainingContext?: TrainingContextInput): Promise<void>
+  importDataset(dataset: HistoryDataset, controls?: HistoryProcessingControls): Promise<void>
   listDatasets(): Promise<HistoryDatasetSummary[]>
   loadDataset(id: string): Promise<HistoryDataset | null>
+  listDatasetEntries(): Promise<DatasetListEntry[]>
+  exportBackupJson(signal?: AbortSignal): Promise<string>
+  previewBackup(json: string, signal?: AbortSignal): Promise<BackupPreview>
+  discardBackupPreview(id: string): void
+  restoreBackup(preview: BackupPreview, options?: { openRestoredSession?: boolean; signal?: AbortSignal }): Promise<RestoreResult>
+  deleteSession(id: string, expectedRevision: number): Promise<void>
+  deleteDataset(id: string): Promise<void>
+  getTradeAnnotation(sessionId: string, tradeId: string): Promise<TradeAnnotation | null>
+  getTrainingContext(sessionId: string): Promise<SessionTrainingContext | null>
+  listTradeAnnotations(sessionId: string): Promise<TradeAnnotation[]>
+  saveTradeAnnotation(sessionId: string, tradeId: string, input: TradeAnnotationInput): Promise<TradeAnnotation>
+  readSessionFrames(sessionId: string, range?: { fromTimestampMs?: number; toTimestampMs?: number }): Promise<MarketFrame[]>
+  storageHealth(): Promise<StorageHealth>
+  requestPersistentStorage(): Promise<boolean>
+  getOnboardingStatus(): Promise<OnboardingStatus | null>
+  setOnboardingStatus(status: OnboardingStatus): Promise<void>
+  listSessionObservations(sessionId: string): Promise<SessionObservation[]>
+  recordSessionObservation(sessionId: string, input: { timestampMs: number; frameIndex: number; reason: string }): Promise<SessionObservation>
   close(): void
 }
 
@@ -63,12 +95,15 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   let verifiedHead: PracticeSnapshot | null = null
   let verifiedDataset: HistoryDataset | null = null
   let pendingMigrationFrames: MarketFrame[] | null = null
+  let baselineState: LibraryState | null = null
+  const pendingBackups = new Map<string, { backup: ValidatedBackup; state: LibraryState; mode: 'empty' | 'append'; localCurrentSessionId: string | null }>()
+  let backupRequestGeneration = 0
 
   function openDatabase(): Promise<IDBDatabase> {
     if (databasePromise) return databasePromise
     databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
       if (typeof indexedDB === 'undefined') { reject(new Error('此浏览器无法使用本地数据库。')); return }
-      const request = indexedDB.open(databaseName, 3)
+      const request = indexedDB.open(databaseName, 4)
       let wasBlocked = false
       request.onupgradeneeded = () => {
         const database = request.result
@@ -76,37 +111,126 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         if (!database.objectStoreNames.contains('settings')) database.createObjectStore('settings')
         if (!database.objectStoreNames.contains('historyChunks')) database.createObjectStore('historyChunks', { keyPath: ['sessionId', 'chunkIndex'] })
         if (!database.objectStoreNames.contains('datasets')) database.createObjectStore('datasets', { keyPath: 'id' })
+        if (!database.objectStoreNames.contains('sessionSummaries')) database.createObjectStore('sessionSummaries', { keyPath: 'id' })
+        if (!database.objectStoreNames.contains('datasetSummaries')) database.createObjectStore('datasetSummaries', { keyPath: 'id' })
+        if (!database.objectStoreNames.contains('annotations')) database.createObjectStore('annotations', { keyPath: ['sessionId', 'tradeId'] })
+        if (!database.objectStoreNames.contains('observations')) database.createObjectStore('observations', { keyPath: 'id' })
+        const upgrade = request.transaction!
+        const settings = upgrade.objectStore('settings')
+        const stateRequest = settings.get('library')
+        stateRequest.onsuccess = () => {
+          if (stateRequest.result === undefined) settings.put({ epoch: crypto.randomUUID(), sequence: 0, generation: 0 }, 'library')
+        }
+        const sessions = upgrade.objectStore('sessions').openCursor()
+        sessions.onsuccess = () => {
+          const cursor = sessions.result
+          if (!cursor) return
+          upgrade.objectStore('sessionSummaries').put(createSessionSummary(cursor.value as unknown, null, null, String(cursor.primaryKey)))
+          cursor.continue()
+        }
+        const datasets = upgrade.objectStore('datasets').openCursor()
+        datasets.onsuccess = () => {
+          const cursor = datasets.result
+          if (!cursor) return
+          let entry: DatasetListEntry
+          try { entry = { id: String(cursor.primaryKey), summary: validateHistoryDatasetSummary(cursor.value as unknown), errorMessage: null } }
+          catch (error) { entry = { id: String(cursor.primaryKey), summary: null, errorMessage: error instanceof Error ? error.message : '数据集摘要损坏。' } }
+          upgrade.objectStore('datasetSummaries').put(entry)
+          cursor.continue()
+        }
       }
       request.onerror = () => reject(request.error ?? new Error('本地数据库打开失败。'))
       request.onblocked = () => { wasBlocked = true; reject(new Error('其他窗口占用了本地数据库，请关闭其他练习窗口后重试。')) }
       request.onsuccess = () => {
         if (wasBlocked) { request.result.close(); return }
-        request.result.onversionchange = () => { request.result.close(); databasePromise = null }
+        request.result.onversionchange = () => { request.result.close(); databasePromise = null; baseline = undefined; baselineState = null; verifiedDataset = null; verifiedHead = null }
         resolve(request.result)
       }
     }).catch((error: unknown) => { databasePromise = null; throw error })
     return databasePromise
   }
 
-  async function importDataset(input: HistoryDataset): Promise<void> {
-    const dataset = structuredClone(input)
-    await validateHistoryDataset(dataset)
+  async function currentState(): Promise<LibraryState> {
+    return readLibraryState(await readStored(await openDatabase(), 'settings', 'library'))
+  }
+  function sameState(left: LibraryState, right: LibraryState): boolean {
+    return left.epoch === right.epoch && left.sequence === right.sequence
+  }
+  async function writeTransaction(
+    stores: string[], work: (transaction: IDBTransaction, abort: (error: unknown) => void) => void,
+    options: { checkBaseline?: boolean; activate?: boolean; expectedState?: LibraryState; signal?: AbortSignal; failureMessage?: string } = {},
+  ): Promise<LibraryState> {
+    checkCancelled(options.signal)
     const database = await openDatabase()
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction('datasets', 'readwrite')
+    return new Promise<LibraryState>((resolve, reject) => {
+      const transaction = database.transaction([...new Set(['settings', ...stores])], 'readwrite')
       let failure: unknown = null
+      let committedState: LibraryState
+      const abort = (error: unknown): void => { failure = error; try { transaction.abort() } catch { /* Completion is authoritative. */ } }
+      const cancel = (): void => abort(new DOMException('操作已取消，原有数据保留。', 'AbortError'))
+      options.signal?.addEventListener('abort', cancel, { once: true })
+      const stateRequest = transaction.objectStore('settings').get('library')
+      stateRequest.onsuccess = () => {
+        try {
+          checkCancelled(options.signal)
+          const state = readLibraryState(stateRequest.result as unknown)
+          if (options.expectedState && !sameState(state, options.expectedState)) throw new Error('预览后数据库已变化，请重新读取预览；原有数据没有被覆盖。')
+          if (options.checkBaseline && (!baselineState || state.epoch !== baselineState.epoch || state.generation !== baselineState.generation)) throw new Error('另一窗口已更新练习或切换当前练习，请重新读取；原有数据没有被覆盖。')
+          if (state.sequence >= Number.MAX_SAFE_INTEGER || state.generation >= Number.MAX_SAFE_INTEGER) throw new Error('本地数据版本超出安全范围，请导出备份。')
+          const execute = (): void => {
+            committedState = { ...state, sequence: state.sequence + 1, generation: state.generation + (options.activate ? 1 : 0) }
+            transaction.objectStore('settings').put(committedState, 'library')
+            try { work(transaction, abort) } catch (error) { abort(error) }
+          }
+          if (options.checkBaseline) {
+            const pointer = transaction.objectStore('settings').get('current')
+            pointer.onsuccess = () => {
+              try {
+                if (!samePointer(parsePointer(pointer.result as unknown), baseline ?? null)) throw new Error('另一窗口已更新练习，原有数据没有被覆盖。')
+                execute()
+              } catch (error) { abort(error) }
+            }
+          } else execute()
+        } catch (error) { abort(error) }
+      }
+      transaction.oncomplete = () => { options.signal?.removeEventListener('abort', cancel); resolve(committedState) }
+      transaction.onabort = () => { options.signal?.removeEventListener('abort', cancel); reject(failure ?? transaction.error ?? new Error(options.failureMessage ?? '保存事务未完成，原有数据保留。')) }
+      transaction.onerror = () => { failure ??= transaction.error }
+    })
+  }
+
+  async function readAll<T>(storeName: string, query?: IDBValidKey | IDBKeyRange): Promise<T[]> {
+    const database = await openDatabase()
+    return new Promise<T[]>((resolve, reject) => {
+      const transaction = database.transaction(storeName, 'readonly')
+      const request = transaction.objectStore(storeName).getAll(query)
+      let records: T[] = []
+      request.onsuccess = () => { records = request.result as T[] }
+      transaction.oncomplete = () => resolve(records)
+      transaction.onabort = () => reject(transaction.error ?? new Error('读取本地记录失败。'))
+    })
+  }
+
+  async function importDataset(input: HistoryDataset, controls?: HistoryProcessingControls): Promise<void> {
+    throwIfHistoryCancelled(controls)
+    const dataset = structuredClone(input)
+    await validateHistoryDataset(dataset, controls)
+    throwIfHistoryCancelled(controls)
+    const signal = typeof AbortSignal !== 'undefined' && controls?.signal instanceof AbortSignal ? controls.signal : undefined
+    await writeTransaction(['datasets', 'datasetSummaries'], (transaction, abort) => {
+      throwIfHistoryCancelled(controls)
       const store = transaction.objectStore('datasets')
       const existing = store.get(dataset.id)
       existing.onsuccess = () => {
+        if (controls?.signal?.aborted) { abort(new DOMException('历史导入已取消，原有数据保留。', 'AbortError')); return }
         if (existing.result !== undefined) {
-          failure = new Error('这份历史数据已经导入，原数据集没有被覆盖。请从已导入列表中选择。')
-          transaction.abort()
-        } else store.add(dataset)
+          abort(new Error('这份历史数据已经导入，原数据集没有被覆盖。请从已导入列表中选择。'))
+        } else {
+          store.add(dataset)
+          transaction.objectStore('datasetSummaries').add({ id: dataset.id, summary: validateHistoryDatasetSummary(dataset), errorMessage: null })
+        }
       }
-      transaction.oncomplete = () => resolve()
-      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('历史数据导入事务未完成，原有数据没有被覆盖。'))
-      transaction.onerror = () => { failure ??= transaction.error }
-    })
+    }, { signal, failureMessage: '导入事务未完成，原有数据保留。' })
   }
 
   async function loadDataset(id: string): Promise<HistoryDataset | null> {
@@ -114,7 +238,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     const input = await readStored(database, 'datasets', id)
     if (input === undefined) return null
     // Validation includes every original row and the immutable source fingerprint.
-    await validateHistoryDataset(input as HistoryDataset)
+    await validateHistoryDataset(input as HistoryDataset, { yieldControl: yieldToEventLoop })
     const dataset = input as HistoryDataset
     if (dataset.id !== id) throw new Error('历史数据集标识与数据库索引不一致。原有数据没有被覆盖。')
     // The engine freezes verified datasets. Reusing that object preserves its
@@ -124,23 +248,32 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   }
 
   async function listDatasets(): Promise<HistoryDatasetSummary[]> {
-    const database = await openDatabase()
-    return new Promise<HistoryDatasetSummary[]>((resolve, reject) => {
-      const transaction = database.transaction('datasets', 'readonly')
-      const request = transaction.objectStore('datasets').openCursor()
-      const summaries: HistoryDatasetSummary[] = []
-      let failure: unknown = null
-      request.onsuccess = () => {
-        const cursor = request.result
-        if (!cursor) return
-        try {
-          // Listing source information never hashes or retains unselected quotes.
-          summaries.push(validateHistoryDatasetSummary(cursor.value as unknown))
-          cursor.continue()
-        } catch (error) { failure = error; transaction.abort() }
+    return (await listDatasetEntries()).flatMap(entry => entry.summary ? [entry.summary] : [])
+  }
+  async function listDatasetEntries(): Promise<DatasetListEntry[]> {
+    return (await readAll<unknown>('datasetSummaries')).map(raw => {
+      const id = raw && typeof raw === 'object' && 'id' in raw ? String(raw.id) : 'unknown'
+      try {
+        if (!raw || typeof raw !== 'object' || !('summary' in raw)) throw new Error('数据集摘要损坏。')
+        const summary = raw.summary ? validateHistoryDatasetSummary(raw.summary) : null
+        if (summary && summary.id !== id) throw new Error('数据集摘要标识不一致。')
+        return { id, summary, errorMessage: summary ? null : ('errorMessage' in raw && typeof raw.errorMessage === 'string' ? raw.errorMessage : '数据集摘要损坏。') }
       }
-      transaction.oncomplete = () => resolve(summaries)
-      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取历史数据列表失败。'))
+      catch (error) { return { id, summary: null, errorMessage: error instanceof Error ? error.message : '数据集摘要损坏。' } }
+    })
+  }
+  async function listSessions(): Promise<SessionSummary[]> {
+    const database = await openDatabase()
+    return new Promise<SessionSummary[]>((resolve, reject) => {
+      const transaction = database.transaction(['sessionSummaries', 'settings'], 'readonly')
+      let summaries: SessionSummary[] = []
+      let pointer: CurrentPointer | null = null
+      const request = transaction.objectStore('sessionSummaries').getAll()
+      request.onsuccess = () => { summaries = (request.result as unknown[]).map(validateSessionSummary) }
+      const current = transaction.objectStore('settings').get('current')
+      current.onsuccess = () => { try { pointer = parsePointer(current.result as unknown) } catch { /* All records remain visible. */ } }
+      transaction.oncomplete = () => resolve(summaries.map(summary => ({ ...summary, isCurrent: summary.id === pointer?.id })))
+      transaction.onabort = () => reject(transaction.error ?? new Error('读取练习列表失败。'))
     })
   }
 
@@ -148,9 +281,11 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     baseline = undefined
     verifiedHead = null
     pendingMigrationFrames = null
+    baselineState = null
     let raw: unknown | null = null
     try {
       const database = await openDatabase()
+      const initialState = await currentState()
       const loaded = await new Promise<{ raw: unknown | null; pointer: CurrentPointer | null }>((resolve, reject) => {
         const transaction = database.transaction(['sessions', 'settings'], 'readonly')
         let pointer: CurrentPointer | null = null
@@ -177,7 +312,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取练习失败。'))
         transaction.onerror = () => { failure ??= transaction.error }
       })
-      if (!loaded.pointer) { baseline = null; return null }
+      if (!loaded.pointer) { baseline = null; baselineState = initialState; return null }
       raw = loaded.raw
       if (typeof raw !== 'object' || raw === null || !('revision' in raw) || raw.revision !== loaded.pointer.revision || !('id' in raw) || raw.id !== loaded.pointer.id) {
         throw new Error('练习快照与索引版本不一致。原有数据没有被覆盖。')
@@ -216,7 +351,10 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         restored = validator.finish()
       }
       if (!samePointer(parsePointer(await readStored(database, 'settings', 'current')), loaded.pointer)) throw new Error('另一窗口在读取期间更新了练习，请重试读取。原有数据没有被覆盖。')
+      const finalState = await currentState()
+      if (!sameState(initialState, finalState)) throw new Error('另一窗口在读取期间更新了数据库，请重试读取。原有数据没有被覆盖。')
       baseline = loaded.pointer
+      baselineState = finalState
       verifiedHead = copyPracticeSnapshot(restored)
       return copyPracticeSnapshot(restored)
     } catch (error) {
@@ -225,23 +363,43 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     }
   }
 
-  async function saveHistorical(snapshot: HistoricalSessionSnapshot): Promise<void> {
+  function writeMetadata(transaction: IDBTransaction, snapshot: PracticeSnapshot, annotation: PendingTradeAnnotation | undefined, prior: PracticeSnapshot | null, abort: (error: unknown) => void, trainingContext?: SessionTrainingContext): void {
+    if (trainingContext) transaction.objectStore('settings').add(trainingContext, ['training', snapshot.id])
+    const summaryRequest = transaction.objectStore('sessionSummaries').get(snapshot.id)
+    summaryRequest.onsuccess = () => {
+      const previousSummary = summaryRequest.result === undefined ? undefined : validateSessionSummary(summaryRequest.result as unknown)
+      transaction.objectStore('sessionSummaries').put(createSessionSummary(snapshot, previousSummary ? previousSummary.createdAtMs : Date.now(), Date.now()))
+    }
+    if (!annotation) return
+    if (snapshot.account.position?.id !== annotation.tradeId && !snapshot.trades.some(trade => trade.id === annotation.tradeId)) { abort(new Error('备注必须关联已保存的交易。')); return }
+    const request = transaction.objectStore('annotations').get([snapshot.id, annotation.tradeId])
+    request.onsuccess = () => {
+      try {
+        const previousAnnotation = request.result === undefined ? null : validateTradeAnnotation(request.result as unknown)
+        const isBeforeEntry = snapshot.account.position?.id === annotation.tradeId && prior?.account.position?.id !== annotation.tradeId
+        const nextAnnotation = reviseTradeAnnotation(snapshot.id, annotation.tradeId, previousAnnotation, annotation, isBeforeEntry)
+        transaction.objectStore('annotations').put(nextAnnotation)
+      } catch (error) { abort(error) }
+    }
+  }
+
+  async function saveHistorical(snapshot: HistoricalSessionSnapshot, annotation?: PendingTradeAnnotation, trainingContextInput?: TrainingContextInput): Promise<void> {
     if (baseline === undefined) throw new Error('请先读取当前练习，再保存数据。')
     const prior = verifiedHead?.id === snapshot.id ? verifiedHead : null
+    if (prior && trainingContextInput) throw new Error('训练对照信息只能在新练习创建时记录，不能改写既有标签。')
+    const trainingContext = trainingContextInput ? createSessionTrainingContext(snapshot.id, trainingContextInput) : undefined
+    if (trainingContext && trainingContext.sourceFingerprint !== snapshot.sourceState.fingerprint) throw new Error('训练对照来源指纹与历史练习不一致。')
     if (prior && !isHistoricalSnapshot(prior)) throw new Error('练习模式不可原地改变。原有数据没有被覆盖。')
     const dataset = verifiedDataset?.id === snapshot.sourceState.datasetId
       ? verifiedDataset : await loadDataset(snapshot.sourceState.datasetId)
     if (!dataset) throw new Error('历史练习引用的原始数据集缺失。原有数据没有被覆盖。')
     const validated = prior ? validateHistoricalTransition(prior, snapshot, dataset) : validateHistoricalSnapshot(snapshot, dataset)
     if (prior && validated.revision === prior.revision && JSON.stringify(validated) !== JSON.stringify(prior)) throw new Error('练习状态发生改变但保存版本未推进。原有数据没有被覆盖。')
-    const database = await openDatabase()
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction(['sessions', 'settings', 'datasets'], 'readwrite')
-      let failure: unknown = null
-      function abort(error: unknown): void { failure = error; transaction.abort() }
+    const committedState = await writeTransaction(['sessions', 'datasets', 'sessionSummaries', 'annotations'], (transaction, abort) => {
       function writeHead(): void {
         transaction.objectStore('sessions').put(validated)
         transaction.objectStore('settings').put({ id: validated.id, revision: validated.revision }, 'current')
+        writeMetadata(transaction, validated, annotation, prior, abort, trainingContext)
       }
       const pointer = transaction.objectStore('settings').get('current')
       pointer.onsuccess = () => {
@@ -255,6 +413,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
               if (source.result !== 1) throw new Error('历史数据集在保存期间丢失。原有数据没有被覆盖。')
               if (prior) {
                 if (validated.revision !== prior.revision) writeHead()
+                else if (annotation) writeMetadata(transaction, validated, annotation, prior, abort)
               } else {
                 const existing = transaction.objectStore('sessions').get(validated.id)
                 existing.onsuccess = () => {
@@ -266,37 +425,34 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
           }
         } catch (error) { abort(error) }
       }
-      transaction.oncomplete = () => resolve()
-      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('保存事务未完成，请重试或导出快照。'))
-      transaction.onerror = () => { failure ??= transaction.error }
-    })
+    }, { checkBaseline: true, activate: true })
     baseline = { id: validated.id, revision: validated.revision }
+    baselineState = committedState
     verifiedHead = copyPracticeSnapshot(validated)
     pendingMigrationFrames = null
   }
 
-  async function saveSimulation(snapshot: SessionSnapshot): Promise<void> {
+  async function saveSimulation(snapshot: SessionSnapshot, annotation?: PendingTradeAnnotation, trainingContextInput?: TrainingContextInput): Promise<void> {
     if (baseline === undefined) throw new Error('请先读取当前练习，再保存数据。')
     const prior = verifiedHead?.id === snapshot.id ? verifiedHead : null
+    if (prior && trainingContextInput) throw new Error('训练对照信息只能在新练习创建时记录，不能改写既有标签。')
+    const trainingContext = trainingContextInput ? createSessionTrainingContext(snapshot.id, trainingContextInput) : undefined
     if (prior && isHistoricalSnapshot(prior)) throw new Error('练习模式不可原地改变。原有数据没有被覆盖。')
     const previous = prior
     const validated = previous ? validateSessionTransition(previous, snapshot) : validateSessionSnapshot(snapshot)
     if (previous && validated.revision === previous.revision && JSON.stringify(validated) !== JSON.stringify(previous)) {
       throw new Error('练习状态发生改变但保存版本未推进。原有数据没有被覆盖。')
     }
-    const database = await openDatabase()
     const migration = previous && pendingMigrationFrames !== null
     const appendStart = migration || !previous ? 0 : previous.sourceState.frameIndex + 1
     const appendFrames = migration
       ? [...pendingMigrationFrames!, ...validated.frames.slice(previous!.sourceState.frameIndex + 1 - validated.frameStartIndex)]
       : previous ? validated.frames.slice(appendStart - validated.frameStartIndex) : validated.frames
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction(['sessions', 'settings', 'historyChunks'], 'readwrite')
-      let failure: unknown = null
-      function abort(error: unknown): void { failure = error; transaction.abort() }
+    const committedState = await writeTransaction(['sessions', 'historyChunks', 'sessionSummaries', 'annotations'], (transaction, abort) => {
       function writeHead(): void {
         transaction.objectStore('sessions').put(validated)
         transaction.objectStore('settings').put({ id: validated.id, revision: validated.revision }, 'current')
+        writeMetadata(transaction, validated, annotation, previous, abort, trainingContext)
       }
       function writeHistory(prefix: MarketFrame[]): void {
         let chunkIndex = Math.floor(appendStart / SESSION_FRAME_WINDOW_SIZE)
@@ -340,7 +496,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         try {
           const pointer = parsePointer(pointerRequest.result as unknown)
           if (!samePointer(pointer, baseline ?? null)) throw new Error('另一窗口已更新练习。请先导出此窗口的未保存快照，再关闭此窗口并刷新恢复最新练习；不会覆盖另一窗口的数据。')
-          if (previous && validated.revision === previous.revision && !migration) return
+          if (previous && validated.revision === previous.revision && !migration) { if (annotation) writeMetadata(transaction, validated, annotation, previous, abort); return }
           if (!previous) {
             const existing = transaction.objectStore('sessions').get(validated.id)
             existing.onsuccess = () => {
@@ -352,18 +508,377 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
           } else appendHistory()
         } catch (error) { abort(error) }
       }
-      transaction.oncomplete = () => resolve()
-      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('保存事务未完成，请重试或导出快照。'))
-      transaction.onerror = () => { failure ??= transaction.error }
-    })
+    }, { checkBaseline: true, activate: true })
     baseline = { id: validated.id, revision: validated.revision }
+    baselineState = committedState
     verifiedHead = copySessionSnapshot(validated)
     pendingMigrationFrames = null
   }
 
+  async function loadCurrentWithSource(): Promise<LoadedSession | null> {
+    const snapshot = await loadCurrent()
+    return snapshot ? { snapshot, dataset: snapshot.schemaVersion === 4 ? verifiedDataset : null } : null
+  }
+
+  async function loadSessionInternal(id: string): Promise<{ loaded: LoadedSession; migrationFrames: MarketFrame[] | null; state: LibraryState; chunks: HistoryChunk[] } | null> {
+    const initialState = await currentState()
+    const database = await openDatabase()
+    const raw = await readStored(database, 'sessions', id)
+    if (raw === undefined) return null
+    try {
+      if (!raw || typeof raw !== 'object' || !('id' in raw) || raw.id !== id || !('schemaVersion' in raw)) throw new Error('练习标识或格式损坏。')
+      let snapshot: PracticeSnapshot
+      let dataset: HistoryDataset | null = null
+      let migrationFrames: MarketFrame[] | null = null
+      let chunks: HistoryChunk[] = []
+      if (raw.schemaVersion === 4) {
+        const source = 'sourceState' in raw && raw.sourceState && typeof raw.sourceState === 'object' && 'datasetId' in raw.sourceState ? raw.sourceState : null
+        if (!source || typeof source.datasetId !== 'string') throw new Error('历史数据集引用损坏。')
+        dataset = await loadDataset(source.datasetId)
+        if (!dataset) throw new Error('历史数据集缺失。')
+        snapshot = validateHistoricalSnapshot(raw, dataset)
+      } else if (raw.schemaVersion === 1 || raw.schemaVersion === 2) {
+        snapshot = validateSessionSnapshot(raw)
+        if (!('frames' in raw) || !Array.isArray(raw.frames)) throw new Error('旧格式练习行情缺失。')
+        migrationFrames = structuredClone(raw.frames as MarketFrame[])
+      } else {
+        const validator = createSessionHistoryValidator(raw)
+        const count = (raw as SessionSnapshot).sourceState.frameIndex + 1
+        chunks = await readAll<HistoryChunk>('historyChunks', IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]))
+        if (chunks.length !== Math.ceil(count / SESSION_FRAME_WINDOW_SIZE)) throw new Error('归档行情块数量不一致。')
+        for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = parseChunk(chunks[index], id, index, Math.min(SESSION_FRAME_WINDOW_SIZE, count - index * SESSION_FRAME_WINDOW_SIZE))
+          for (const frame of chunk.frames) validator.pushFrame(frame)
+        }
+        snapshot = validator.finish()
+      }
+      const finalState = await currentState()
+      if (!sameState(initialState, finalState)) throw new Error('另一窗口在读取期间更新了数据库，请重试读取。')
+      return { loaded: { snapshot: copyPracticeSnapshot(snapshot), dataset }, migrationFrames, state: finalState, chunks }
+    } catch (error) { throw new SessionLoadError(error instanceof Error ? error.message : '读取练习失败。', raw) }
+  }
+  async function loadSession(id: string): Promise<LoadedSession | null> { return (await loadSessionInternal(id))?.loaded ?? null }
+
+  async function activateSession(id: string): Promise<LoadedSession> {
+    if (baseline === undefined || !baselineState) throw new Error('请先读取当前练习。')
+    const target = await loadSessionInternal(id)
+    if (!target) throw new Error('选择的练习不存在。')
+    const snapshot = target.loaded.snapshot
+    const state = await writeTransaction(['sessions', 'datasets'], (transaction, abort) => {
+      const request = transaction.objectStore('sessions').get(id)
+      request.onsuccess = () => {
+        try {
+          const current = request.result as { revision?: unknown } | undefined
+          if (!current || current.revision !== snapshot.revision) throw new Error('目标练习已更新或删除，请重新读取。')
+          const commit = (): void => { transaction.objectStore('settings').put({ id, revision: snapshot.revision }, 'current') }
+          if (target.loaded.dataset) {
+            const source = transaction.objectStore('datasets').count(target.loaded.dataset.id)
+            source.onsuccess = () => { if (source.result !== 1) abort(new Error('目标数据集已删除。')); else commit() }
+          } else commit()
+        } catch (error) { abort(error) }
+      }
+    }, { checkBaseline: true, activate: true, expectedState: target.state })
+    baseline = { id, revision: snapshot.revision }
+    baselineState = state
+    verifiedHead = copyPracticeSnapshot(snapshot)
+    verifiedDataset = target.loaded.dataset
+    pendingMigrationFrames = target.migrationFrames
+    return { snapshot: copyPracticeSnapshot(snapshot), dataset: target.loaded.dataset }
+  }
+
+  async function getTradeAnnotation(sessionId: string, tradeId: string): Promise<TradeAnnotation | null> {
+    const raw = await readStored(await openDatabase(), 'annotations', [sessionId, tradeId])
+    return raw === undefined ? null : validateTradeAnnotation(raw)
+  }
+  async function getTrainingContext(sessionId: string): Promise<SessionTrainingContext | null> {
+    const raw = await readStored(await openDatabase(), 'settings', ['training', sessionId])
+    if (raw === undefined) return null
+    const context = validateSessionTrainingContext(raw)
+    if (context.sessionId !== sessionId) throw new Error('训练对照信息与练习标识不一致。')
+    return context
+  }
+  async function listTradeAnnotations(sessionId: string): Promise<TradeAnnotation[]> {
+    return (await readAll<unknown>('annotations', IDBKeyRange.bound([sessionId, ''], [sessionId, '\uffff']))).map(validateTradeAnnotation)
+  }
+  async function saveTradeAnnotation(sessionId: string, tradeId: string, input: TradeAnnotationInput): Promise<TradeAnnotation> {
+    let result: TradeAnnotation | null = null
+    await writeTransaction(['sessions', 'annotations'], (transaction, abort) => {
+      const session = transaction.objectStore('sessions').get(sessionId)
+      session.onsuccess = () => {
+        try {
+          const snapshot = session.result as PracticeSnapshot | undefined
+          if (!snapshot || (snapshot.account.position?.id !== tradeId && !snapshot.trades.some(trade => trade.id === tradeId))) throw new Error('备注关联的交易不存在。')
+          const prior = transaction.objectStore('annotations').get([sessionId, tradeId])
+          prior.onsuccess = () => {
+            try {
+              result = reviseTradeAnnotation(sessionId, tradeId, prior.result === undefined ? null : validateTradeAnnotation(prior.result as unknown), input, false)
+              transaction.objectStore('annotations').put(result)
+            } catch (error) { abort(error) }
+          }
+        } catch (error) { abort(error) }
+      }
+    })
+    return result!
+  }
+
+  async function readSessionFrames(sessionId: string, range: { fromTimestampMs?: number; toTimestampMs?: number } = {}): Promise<MarketFrame[]> {
+    const { fromTimestampMs, toTimestampMs } = range
+    if ([fromTimestampMs, toTimestampMs].some(time => time !== undefined && (!Number.isSafeInteger(time) || time < 0))
+      || (fromTimestampMs !== undefined && toTimestampMs !== undefined && fromTimestampMs > toTimestampMs)) throw new Error('观察时间范围无效。')
+    const target = await loadSessionInternal(sessionId)
+    if (!target) throw new Error('练习不存在。')
+    const snapshot = target.loaded.snapshot
+    let frames: MarketFrame[]
+    if (target.loaded.dataset) {
+      const start = 'historyStart' in snapshot && snapshot.historyStart && typeof snapshot.historyStart === 'object'
+        && 'startFrameIndex' in snapshot.historyStart && 'warmupFrameCount' in snapshot.historyStart
+        && typeof snapshot.historyStart.startFrameIndex === 'number' && typeof snapshot.historyStart.warmupFrameCount === 'number'
+        ? snapshot.historyStart.startFrameIndex - snapshot.historyStart.warmupFrameCount : 0
+      frames = target.loaded.dataset.frames.slice(start, snapshot.sourceState.frameIndex + 1)
+    } else frames = target.migrationFrames ?? target.chunks.flatMap(chunk => chunk.frames)
+    return structuredClone(frames.filter(frame => (fromTimestampMs === undefined || frame.quote.timestampMs >= fromTimestampMs)
+      && (toTimestampMs === undefined || frame.quote.timestampMs <= toTimestampMs) && frame.quote.timestampMs <= snapshot.sourceState.currentTimestampMs))
+  }
+
+  async function deleteSession(id: string, expectedRevision: number): Promise<void> {
+    await writeTransaction(['sessions', 'sessionSummaries', 'historyChunks', 'annotations', 'observations'], (transaction, abort) => {
+      const pointer = transaction.objectStore('settings').get('current')
+      pointer.onsuccess = () => {
+        try {
+          if (parsePointer(pointer.result as unknown)?.id === id) throw new Error('请先切换到另一练习，再删除当前练习。')
+          const request = transaction.objectStore('sessions').get(id)
+          request.onsuccess = () => {
+            const snapshot = request.result as { revision?: unknown } | undefined
+            if (!snapshot || snapshot.revision !== expectedRevision) { abort(new Error('练习版本已变化或已删除，请刷新列表。')); return }
+            transaction.objectStore('sessions').delete(id)
+            transaction.objectStore('sessionSummaries').delete(id)
+            transaction.objectStore('settings').delete(['training', id])
+            transaction.objectStore('historyChunks').delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]))
+            transaction.objectStore('annotations').delete(IDBKeyRange.bound([id, ''], [id, '\uffff']))
+            const observations = transaction.objectStore('observations').openCursor()
+            observations.onsuccess = () => { const cursor = observations.result; if (cursor) { if ((cursor.value as SessionObservation).sessionId === id) cursor.delete(); cursor.continue() } }
+          }
+        } catch (error) { abort(error) }
+      }
+    })
+  }
+  async function deleteDataset(id: string): Promise<void> {
+    await writeTransaction(['sessions', 'datasets', 'datasetSummaries'], (transaction, abort) => {
+      const sessions = transaction.objectStore('sessions').openCursor()
+      sessions.onsuccess = () => {
+        const cursor = sessions.result
+        if (!cursor) { transaction.objectStore('datasets').delete(id); transaction.objectStore('datasetSummaries').delete(id); return }
+        const snapshot = cursor.value as PracticeSnapshot
+        if (snapshot.schemaVersion === 4 && snapshot.sourceState.datasetId === id) { abort(new Error('此数据集仍被练习引用，请先删除相关练习。')); return }
+        cursor.continue()
+      }
+    })
+    if (verifiedDataset?.id === id) verifiedDataset = null
+  }
+
+  async function storageHealth(): Promise<StorageHealth> {
+    if (typeof navigator === 'undefined' || !navigator.storage) return { usageBytes: null, quotaBytes: null, isPersistent: null }
+    const [estimate, persisted] = await Promise.allSettled([navigator.storage.estimate(), navigator.storage.persisted()])
+    return { usageBytes: estimate.status === 'fulfilled' ? estimate.value.usage ?? null : null,
+      quotaBytes: estimate.status === 'fulfilled' ? estimate.value.quota ?? null : null, isPersistent: persisted.status === 'fulfilled' ? persisted.value : null }
+  }
+  async function requestPersistentStorage(): Promise<boolean> {
+    return typeof navigator !== 'undefined' && navigator.storage?.persist ? navigator.storage.persist() : false
+  }
+  async function getOnboardingStatus(): Promise<OnboardingStatus | null> {
+    const raw = await readStored(await openDatabase(), 'settings', 'onboarding')
+    return raw === 'completed' || raw === 'skipped' ? raw : null
+  }
+  async function setOnboardingStatus(status: OnboardingStatus): Promise<void> {
+    if (status !== 'completed' && status !== 'skipped') throw new Error('引导状态无效。')
+    await writeTransaction([], transaction => { transaction.objectStore('settings').put(status, 'onboarding') })
+  }
+  async function listSessionObservations(sessionId: string): Promise<SessionObservation[]> {
+    return (await readAll<unknown>('observations')).map(validateSessionObservation).filter(observation => observation.sessionId === sessionId)
+  }
+  async function recordSessionObservation(sessionId: string, input: { timestampMs: number; frameIndex: number; reason: string }): Promise<SessionObservation> {
+    const observation = validateSessionObservation({ ...input, id: crypto.randomUUID(), sessionId, recordedAtMs: Date.now() })
+    await writeTransaction(['sessions', 'observations'], (transaction, abort) => {
+      const session = transaction.objectStore('sessions').get(sessionId)
+      session.onsuccess = () => {
+        const snapshot = session.result as PracticeSnapshot | undefined
+        if (!snapshot || snapshot.sourceState.frameIndex !== input.frameIndex || snapshot.sourceState.currentTimestampMs !== input.timestampMs
+          || baseline?.id !== sessionId) { abort(new Error('练习进度已变化，请按当前报价重新记录观察。')); return }
+        transaction.objectStore('observations').add(observation)
+      }
+    }, { checkBaseline: true })
+    return observation
+  }
+
+  async function captureLibrary(): Promise<{ backup: PracticeBackup; state: LibraryState }> {
+    const database = await openDatabase()
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(['sessions', 'settings', 'historyChunks', 'datasets', 'annotations', 'observations', 'sessionSummaries'], 'readonly')
+      const backup: PracticeBackup = { backupFormatVersion: 1, exportedAtMs: Date.now(), currentSessionId: null, sessions: [],
+        historyChunks: [], datasets: [], annotations: [], observations: [], trainingContexts: [], sessionTimes: [], onboardingStatus: null }
+      let state: LibraryState
+      let capturedPointer: CurrentPointer | null = null
+      let failure: unknown = null
+      const sessions = transaction.objectStore('sessions').getAll()
+      sessions.onsuccess = () => { backup.sessions = sessions.result as unknown[] }
+      const chunks = transaction.objectStore('historyChunks').getAll()
+      chunks.onsuccess = () => { backup.historyChunks = chunks.result as HistoryChunk[] }
+      const datasets = transaction.objectStore('datasets').getAll()
+      datasets.onsuccess = () => { backup.datasets = datasets.result as HistoryDataset[] }
+      const annotations = transaction.objectStore('annotations').getAll()
+      annotations.onsuccess = () => { backup.annotations = annotations.result as TradeAnnotation[] }
+      const observations = transaction.objectStore('observations').getAll()
+      observations.onsuccess = () => { backup.observations = observations.result as SessionObservation[] }
+      const trainingContexts = transaction.objectStore('settings').openCursor()
+      trainingContexts.onsuccess = () => {
+        const cursor = trainingContexts.result
+        if (!cursor) return
+        try {
+          const key = cursor.primaryKey
+          if (!Array.isArray(key) || key[0] !== 'training') { cursor.continue(); return }
+          const context = validateSessionTrainingContext(cursor.value as unknown)
+          if (key.length !== 2 || key[1] !== context.sessionId) throw new Error('训练对照索引与练习标识不一致。')
+          backup.trainingContexts.push(context)
+          cursor.continue()
+        } catch (error) { failure = error; transaction.abort() }
+      }
+      const summaries = transaction.objectStore('sessionSummaries').getAll()
+      summaries.onsuccess = () => { backup.sessionTimes = (summaries.result as unknown[]).map(validateSessionSummary).map(summary => ({ id: summary.id, createdAtMs: summary.createdAtMs, savedAtMs: summary.savedAtMs })) }
+      const current = transaction.objectStore('settings').get('current')
+      current.onsuccess = () => { try { capturedPointer = parsePointer(current.result as unknown); backup.currentSessionId = capturedPointer?.id ?? null } catch (error) { failure = error; transaction.abort() } }
+      const library = transaction.objectStore('settings').get('library')
+      library.onsuccess = () => { try { state = readLibraryState(library.result as unknown) } catch (error) { failure = error; transaction.abort() } }
+      const onboarding = transaction.objectStore('settings').get('onboarding')
+      onboarding.onsuccess = () => { backup.onboardingStatus = onboarding.result === 'completed' || onboarding.result === 'skipped' ? onboarding.result : null }
+      transaction.oncomplete = () => {
+        if (!capturedPointer && backup.sessions.length) { reject(new Error('数据库包含练习但当前入口缺失，请保留原始数据并恢复入口。')); return }
+        if (capturedPointer) {
+          const head = backup.sessions.find(raw => raw && typeof raw === 'object' && 'id' in raw && raw.id === capturedPointer!.id)
+          if (!head || typeof head !== 'object' || !('revision' in head) || head.revision !== capturedPointer.revision) {
+            reject(new Error('当前练习索引与快照不一致，不能导出正常备份；原有数据保留。'))
+            return
+          }
+        }
+        backup.sessionTimes = backup.sessionTimes.filter(times => backup.sessions.some(raw => raw && typeof raw === 'object' && 'id' in raw && raw.id === times.id))
+        resolve({ backup, state })
+      }
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取完整备份失败，原有数据保留。'))
+    })
+  }
+  function checkBackupSize(json: string): void {
+    if (json.length > BACKUP_MAX_BYTES || new TextEncoder().encode(json).length > BACKUP_MAX_BYTES) throw new Error('备份超过 128 MiB 安全处理上限；没有省略任何数据。')
+  }
+  async function exportBackupJson(signal?: AbortSignal): Promise<string> {
+    checkCancelled(signal)
+    const { backup } = await captureLibrary()
+    const json = JSON.stringify(backup)
+    checkBackupSize(json)
+    await validatePracticeBackup(backup, false, signal)
+    checkCancelled(signal)
+    return json
+  }
+  async function previewBackup(json: string, signal?: AbortSignal): Promise<BackupPreview> {
+    const requestGeneration = ++backupRequestGeneration
+    pendingBackups.clear()
+    const checkRequest = (): void => {
+      checkCancelled(signal)
+      if (requestGeneration !== backupRequestGeneration) throw new DOMException('此恢复预览已被新的操作替代。', 'AbortError')
+    }
+    checkRequest()
+    checkBackupSize(json)
+    let raw: unknown
+    try { raw = JSON.parse(json) as unknown } catch { throw new Error('备份不是有效 JSON，原有数据保留。') }
+    const backup = await validatePracticeBackup(raw, true, signal)
+    checkRequest()
+    const captured = await captureLibrary()
+    checkRequest()
+    const existingIds = new Set(captured.backup.datasets.map(dataset => dataset.id))
+    for (const dataset of backup.datasets) {
+      checkRequest()
+      if (existingIds.has(dataset.id)) {
+        try {
+          const local = await loadDataset(dataset.id)
+          if (!local || local.fingerprint !== dataset.fingerprint) throw new Error('内容不一致。')
+        } catch (error) { throw new Error(`本机同标识历史数据已损坏或冲突，不能追加覆盖：${error instanceof Error ? error.message : '校验失败。'}`) }
+        checkRequest()
+      }
+    }
+    checkRequest()
+    if (!sameState(captured.state, await currentState())) throw new Error('校验期间本机数据库已变化，请重新预览。')
+    checkRequest()
+    const isEmpty = !captured.backup.sessions.length && !captured.backup.datasets.length && !captured.backup.historyChunks.length
+      && !captured.backup.annotations.length && !captured.backup.observations.length && !captured.backup.trainingContexts.length
+    const preview: BackupPreview = { id: crypto.randomUUID(), mode: isEmpty ? 'empty' : 'append', sessionCount: backup.sessions.length,
+      datasetCount: backup.datasets.length, tradeCount: backup.sessions.reduce((count, snapshot) => count + snapshot.trades.length, 0),
+      currentSessionId: backup.currentSessionId, createdAtMs: Date.now() }
+    pendingBackups.set(preview.id, { backup, state: captured.state, mode: preview.mode, localCurrentSessionId: captured.backup.currentSessionId })
+    return preview
+  }
+  function discardBackupPreview(id: string): void { pendingBackups.delete(id) }
+  async function restoreBackup(preview: BackupPreview, options: { openRestoredSession?: boolean; signal?: AbortSignal } = {}): Promise<RestoreResult> {
+    checkCancelled(options.signal)
+    const candidate = pendingBackups.get(preview.id)
+    if (!candidate) throw new Error('恢复预览已失效，请重新选择备份。')
+    const { backup, state, mode } = candidate
+    const ids = new Map(backup.sessions.map(snapshot => [snapshot.id, mode === 'append' ? crypto.randomUUID() : snapshot.id]))
+    const sessions = backup.sessions.map(snapshot => ({ ...copyPracticeSnapshot(snapshot), id: ids.get(snapshot.id)! }))
+    const chunks = backup.historyChunks.map(chunk => ({ ...structuredClone(chunk), sessionId: ids.get(chunk.sessionId)! }))
+    const annotations = backup.annotations.map(annotation => ({ ...structuredClone(annotation), sessionId: ids.get(annotation.sessionId)! }))
+    const observations = backup.observations.map(observation => ({ ...structuredClone(observation), id: mode === 'append' ? crypto.randomUUID() : observation.id, sessionId: ids.get(observation.sessionId)! }))
+    const trainingContexts = backup.trainingContexts.map(context => ({ ...structuredClone(context), sessionId: ids.get(context.sessionId)!,
+      sourceSessionId: context.sourceSessionId === null ? null : ids.get(context.sourceSessionId) ?? context.sourceSessionId, isImportedClaim: true }))
+    const restoredCurrentId = backup.currentSessionId ? ids.get(backup.currentSessionId)! : null
+    const shouldOpen = restoredCurrentId !== null && (mode === 'empty' || options.openRestoredSession === true || candidate.localCurrentSessionId === null)
+    let currentSessionId: string | null = null
+    const committedState = await writeTransaction(['sessions', 'historyChunks', 'datasets', 'datasetSummaries', 'sessionSummaries', 'annotations', 'observations'], (transaction, abort) => {
+      const current = transaction.objectStore('settings').get('current')
+      current.onsuccess = () => { try { currentSessionId = shouldOpen ? restoredCurrentId : parsePointer(current.result as unknown)?.id ?? null } catch (error) { abort(error) } }
+      for (const snapshot of sessions) {
+        transaction.objectStore('sessions').add(snapshot)
+        const previousTimes = backup.sessionTimes.find(times => ids.get(times.id) === snapshot.id)
+        transaction.objectStore('sessionSummaries').add(createSessionSummary(snapshot, mode === 'append' ? Date.now() : previousTimes?.createdAtMs ?? null, Date.now()))
+      }
+      for (const chunk of chunks) transaction.objectStore('historyChunks').add(chunk)
+      for (const annotation of annotations) transaction.objectStore('annotations').add(annotation)
+      for (const observation of observations) transaction.objectStore('observations').add(observation)
+      for (const context of trainingContexts) transaction.objectStore('settings').add(context, ['training', context.sessionId])
+      for (const dataset of backup.datasets) {
+        const request = transaction.objectStore('datasets').count(dataset.id)
+        request.onsuccess = () => {
+          if (request.result === 0) {
+            transaction.objectStore('datasets').add(dataset)
+            transaction.objectStore('datasetSummaries').add({ id: dataset.id, summary: validateHistoryDatasetSummary(dataset), errorMessage: null })
+          }
+        }
+      }
+      if (shouldOpen && restoredCurrentId) {
+        const selected = sessions.find(snapshot => snapshot.id === restoredCurrentId)!
+        transaction.objectStore('settings').put({ id: selected.id, revision: selected.revision }, 'current')
+      }
+      if (mode === 'empty' && backup.onboardingStatus) transaction.objectStore('settings').put(backup.onboardingStatus, 'onboarding')
+    }, { expectedState: state, activate: shouldOpen, signal: options.signal })
+    pendingBackups.delete(preview.id)
+    verifiedDataset = null
+    let loadedSession: LoadedSession | null = null
+    if (shouldOpen && restoredCurrentId) {
+      const selected = sessions.find(snapshot => snapshot.id === restoredCurrentId)!
+      const dataset = selected.schemaVersion === 4 ? backup.datasets.find(source => source.id === selected.sourceState.datasetId)! : null
+      loadedSession = { snapshot: copyPracticeSnapshot(selected), dataset }
+      baseline = { id: selected.id, revision: selected.revision }
+      baselineState = committedState
+      verifiedHead = copyPracticeSnapshot(selected)
+      verifiedDataset = dataset
+      pendingMigrationFrames = null
+    } else if (shouldOpen) { baseline = null; baselineState = committedState; verifiedHead = null; pendingMigrationFrames = null }
+    return { sessionIds: [...ids.values()], currentSessionId, loadedSession }
+  }
+
   return {
-    loadCurrent, importDataset, listDatasets, loadDataset,
-    save(snapshot) { return isHistoricalSnapshot(snapshot) ? saveHistorical(snapshot) : saveSimulation(snapshot) },
+    loadCurrent, loadCurrentWithSource, loadSession, activateSession, listSessions, importDataset, listDatasets, listDatasetEntries, loadDataset,
+    getTradeAnnotation, getTrainingContext, listTradeAnnotations, saveTradeAnnotation, readSessionFrames, deleteSession, deleteDataset,
+    storageHealth, requestPersistentStorage, getOnboardingStatus, setOnboardingStatus, listSessionObservations, recordSessionObservation,
+    exportBackupJson, previewBackup, discardBackupPreview, restoreBackup,
+    save(snapshot, annotation, trainingContext) { return isHistoricalSnapshot(snapshot) ? saveHistorical(snapshot, annotation, trainingContext) : saveSimulation(snapshot, annotation, trainingContext) },
     close() {
       if (databasePromise) void databasePromise.then(database => database.close(), () => undefined)
       databasePromise = null
@@ -371,6 +886,9 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       verifiedHead = null
       verifiedDataset = null
       pendingMigrationFrames = null
+      baselineState = null
+      pendingBackups.clear()
+      backupRequestGeneration += 1
     },
   }
 }

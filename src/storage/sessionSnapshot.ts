@@ -7,7 +7,7 @@ export const SESSION_FRAME_WINDOW_SIZE = 1440
 
 export interface SessionSimulationConfig {
   version: 2
-  parameterVersion: 1
+  parameterVersion: 1 | 2
   seed: number
   scenario: SimulationScenario
   originFrameIndex: number
@@ -71,6 +71,7 @@ function getSimulationReplayCache(currencyPair: CurrencyPair, config: SessionSim
     initialTimestampMs: config.initialTimestampMs,
     initialBidPrice: config.initialBidPrice,
     initialAskPrice: config.initialAskPrice,
+    parameterVersion: config.parameterVersion,
   })
   simulationReplayCache = { key, initialState, steps: [] }
   return simulationReplayCache
@@ -352,6 +353,7 @@ function initializeFromConfig(currencyPair: CurrencyPair, config: SessionSimulat
     startTimestampMs: config.startTimestampMs, maxFrames: config.maxFrames, scenario: config.scenario,
     originFrameIndex: config.originFrameIndex, initialTimestampMs: config.initialTimestampMs,
     initialBidPrice: config.initialBidPrice, initialAskPrice: config.initialAskPrice,
+    parameterVersion: config.parameterVersion,
   })
 }
 
@@ -420,6 +422,7 @@ function validateLegacySnapshot(snapshot: Record<string, unknown>): SessionSnaps
   const maxFrames = source.maxFrames === null ? null : integer(source.maxFrames, '行情数量', 1)
   if (maxFrames !== null && frameIndex >= maxFrames) fail('旧行情进度超过数据末尾')
   let scenario: SimulationScenario = 'standard'
+  let parameterVersion: SimulationState['parameterVersion'] | undefined
   if (snapshot.schemaVersion === 1) {
     if (source.version !== 1 || integer(source.randomState, '旧随机状态', 1) > 0xffff_ffff) fail('旧模拟器状态无效')
     verifyRetainedFrames(frames, frames.length, startTimestampMs, currencyPair)
@@ -429,6 +432,7 @@ function validateLegacySnapshot(snapshot: Record<string, unknown>): SessionSnaps
     validateSimulationState(compatible)
     if (!sameStructure(record(snapshot.simulationConfig, '旧模拟配置'), createSimulationConfig(compatible))) fail('旧模拟配置与状态不一致')
     scenario = compatible.scenario
+    parameterVersion = compatible.parameterVersion
     if (compatible.originFrameIndex > frames.length) fail('旧模拟起点超过行情')
     if (compatible.originFrameIndex > 0) {
       const anchor = frames[compatible.originFrameIndex - 1]!.quote
@@ -447,7 +451,7 @@ function validateLegacySnapshot(snapshot: Record<string, unknown>): SessionSnaps
   const ledger = createLedgerValidator(currencyPair, account, trades)
   frames.forEach((frame) => ledger.push(frame.quote))
   ledger.finish()
-  const state = createSimulationFromQuote(currencyPair, seed, { startTimestampMs, maxFrames: null, scenario }, { frameIndex, timestampMs: anchor.timestampMs, bidPrice: anchor.bidPrice, askPrice: anchor.askPrice })
+  const state = createSimulationFromQuote(currencyPair, seed, { startTimestampMs, maxFrames: null, scenario, parameterVersion }, { frameIndex, timestampMs: anchor.timestampMs, bidPrice: anchor.bidPrice, askPrice: anchor.askPrice })
   return {
     schemaVersion: 3, id: identifier(snapshot.id, '练习'), revision: integer(snapshot.revision, '保存版本'),
     pair: currencyPair, simulationConfig: createSimulationConfig(state), retainedPrefixKind: snapshot.schemaVersion === 1 ? 'legacy-v1' : 'legacy-v2', sourceState: state,

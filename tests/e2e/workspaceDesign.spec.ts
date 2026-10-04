@@ -65,6 +65,7 @@ test('图表缩放、观察范围、实际 Ask 标记及类型切换保持同一
   await expect(chart).toHaveAttribute('data-frame-count', '240')
   const instanceId = await chart.getAttribute('data-chart-instance-id')
   const originalSpan = Number(await chart.getAttribute('data-viewport-to')) - Number(await chart.getAttribute('data-viewport-from'))
+  await chart.scrollIntoViewIfNeeded()
   const plotBounds = await chart.boundingBox()
   if (!plotBounds) throw new Error('图表未显示')
   const pointerX = plotBounds.x + plotBounds.width * .5

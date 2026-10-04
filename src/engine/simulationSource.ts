@@ -5,7 +5,7 @@ import {
   getLondonOffsetMinutes, getNewYorkOffsetMinutes, getSimulationSeasonality,
   isSimulationMarketOpen, lastSimulationTimestamp, MAX_SIMULATION_TIMESTAMP_MS,
   MIN_SIMULATION_TIMESTAMP_MS, nextSimulationTimestamp, SIMULATION_DAY_MS,
-  SIMULATION_MINUTE_MS, SIMULATION_PAIR_PARAMETERS, SIMULATION_PARAMETER_VERSION,
+  SIMULATION_MINUTE_MS, getSimulationPairParameters, SIMULATION_PARAMETER_VERSION,
   SIMULATION_SCENARIO_PARAMETERS, SIMULATION_SCHEDULE_LOOKAHEAD_DAYS,
   SIMULATION_SUBSTEPS, SIMULATION_VOLATILITY,
 } from './simulationParameters'
@@ -20,6 +20,7 @@ export const DEFAULT_SIMULATION_START_TIMESTAMP_MS = Date.UTC(2024, 2, 4, 0, 1)
 export const DEFAULT_SIMULATION_MAX_FRAMES = 1440
 
 export interface SimulationOptions {
+  parameterVersion?: 1 | 2
   startTimestampMs?: number
   maxFrames?: number | null
   scenario?: SimulationScenario
@@ -89,7 +90,7 @@ function validateScheduledEvent(event: ScheduledSimulationEvent | null, currentT
 }
 
 export function validateSimulationState(state: SimulationState): void {
-  if (!state || typeof state !== 'object' || state.version !== SIMULATION_VERSION || state.parameterVersion !== SIMULATION_PARAMETER_VERSION) {
+  if (!state || typeof state !== 'object' || state.version !== SIMULATION_VERSION || (state.parameterVersion !== 1 && state.parameterVersion !== 2)) {
     fail('不支持该模拟模型或参数版本。')
   }
   validateCurrencyPair(state.pair)
@@ -211,7 +212,8 @@ function selectNextScheduledEvent(state: SimulationState): void {
 export function initializeSimulation(pair: CurrencyPair, seed = DEFAULT_SIMULATION_SEED, options: SimulationOptions = {}): SimulationState {
   validateCurrencyPair(pair)
   if (!isUint32(seed)) fail('模拟种子须为 32 位无符号整数。')
-  const parameters = SIMULATION_PAIR_PARAMETERS[pair]
+  const parameterVersion = options.parameterVersion ?? SIMULATION_PARAMETER_VERSION
+  const parameters = getSimulationPairParameters(pair, parameterVersion)
   const initialBidPrice = options.initialBidPrice ?? parameters.initialBidPrice
   if (typeof initialBidPrice !== 'string' || initialBidPrice.length > 80) fail('初始模拟报价无效。')
   const initialBid = readDecimalString(initialBidPrice, '初始模拟 Bid', 'invalid-simulation')
@@ -221,7 +223,7 @@ export function initializeSimulation(pair: CurrencyPair, seed = DEFAULT_SIMULATI
   const initialTimestampMs = options.initialTimestampMs ?? startTimestampMs + (originFrameIndex - 1) * SIMULATION_MINUTE_MS
   const random = new RandomStream(mixSeed(seed, pair === 'EUR/USD' ? 0x455552 : 0x474250))
   const state: SimulationState = {
-    version: SIMULATION_VERSION, parameterVersion: SIMULATION_PARAMETER_VERSION,
+    version: SIMULATION_VERSION, parameterVersion,
     pair, seed, scenario: options.scenario ?? 'standard', randomState: random.state,
     eventRandomState: mixSeed(seed, 0x45564e54), scheduleRandomState: mixSeed(seed, 0x53434844),
     scheduledSearchThroughTimestampMs: initialTimestampMs - SIMULATION_MINUTE_MS,
@@ -264,7 +266,7 @@ interface EventImpact {
 }
 
 function createEventImpact(state: SimulationState, timestampMs: number, random: RandomStream, scheduled: ScheduledSimulationEvent | null, isReopening: boolean): EventImpact {
-  const parameters = SIMULATION_PAIR_PARAMETERS[state.pair]
+  const parameters = getSimulationPairParameters(state.pair, state.parameterVersion)
   const type = isReopening ? 'liquidity' : scheduled?.type ?? (random.uniform() < 0.6 ? 'liquidity' : 'policy')
   const surprise = random.normal()
   const contextMultiplier = 1 + 0.25 * state.economicContext
@@ -304,7 +306,7 @@ function createEventImpact(state: SimulationState, timestampMs: number, random: 
 }
 
 function createSpreadPrice(state: SimulationState, timestampMs: number, liquidityPressure: number, random: RandomStream): ReturnType<typeof MoneyDecimal.max> {
-  const parameters = SIMULATION_PAIR_PARAMETERS[state.pair]
+  const parameters = getSimulationPairParameters(state.pair, state.parameterVersion)
   const { spreadMultiplier } = getSimulationSeasonality(timestampMs)
   const volatilityCost = 0.1 * Math.exp((state.slowLogVariance + state.fastLogVariance) / 2)
   const multiplier = (spreadMultiplier + volatilityCost) * Math.exp(liquidityPressure + 0.035 * random.normal())
@@ -344,7 +346,7 @@ export function advanceSimulation(savedState: SimulationState): SimulationStep |
     }
   }
   const eventSubstep = impact ? (isReopening ? -1 : scheduled ? 0 : Math.floor(eventRandom.uniform() * SIMULATION_SUBSTEPS)) : -1
-  const parameters = SIMULATION_PAIR_PARAMETERS[state.pair]
+  const parameters = getSimulationPairParameters(state.pair, state.parameterVersion)
   const { varianceMultiplier } = getSimulationSeasonality(timestampMs - SIMULATION_MINUTE_MS)
   const stationaryVariance = volatility.slowStationaryVariance + volatility.fastStationaryVariance
   const baseMinuteVariance = parameters.minuteReturnStd ** 2 * varianceMultiplier * Math.exp(state.slowLogVariance + state.fastLogVariance - stationaryVariance / 2)

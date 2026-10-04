@@ -82,7 +82,7 @@ export interface SimulationEvent {
 
 export interface SimulationState {
   version: 2
-  parameterVersion: 1
+  parameterVersion: 1 | 2
   scenario: SimulationScenario
   pair: CurrencyPair
   seed: number

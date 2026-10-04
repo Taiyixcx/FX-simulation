@@ -37,6 +37,31 @@ function memoryRepository(initial: unknown | null = null) {
     importDataset: vi.fn(async () => { throw new Error('本测试仓库仅提供模拟练习。') }),
     listDatasets: vi.fn(async () => []),
     loadDataset: vi.fn(async () => null),
+    loadCurrentWithSource: vi.fn(async () => {
+      const snapshot = await repository.loadCurrent()
+      return snapshot ? { snapshot, dataset: null } : null
+    }),
+    loadSession: vi.fn(async () => null),
+    activateSession: vi.fn(async () => { throw new Error('本测试不提供会话列表。') }),
+    listSessions: vi.fn(async () => []),
+    listDatasetEntries: vi.fn(async () => []),
+    exportBackupJson: vi.fn(async () => { throw new Error('本测试不提供完整备份。') }),
+    previewBackup: vi.fn(async () => { throw new Error('本测试不提供备份恢复。') }),
+    discardBackupPreview: vi.fn(),
+    restoreBackup: vi.fn(async () => { throw new Error('本测试不提供备份恢复。') }),
+    deleteSession: vi.fn(async () => { throw new Error('本测试不提供删除。') }),
+    deleteDataset: vi.fn(async () => { throw new Error('本测试不提供删除。') }),
+    getTradeAnnotation: vi.fn(async () => null),
+    listTradeAnnotations: vi.fn(async () => []),
+    saveTradeAnnotation: vi.fn(async () => { throw new Error('本测试不提供备注。') }),
+    readSessionFrames: vi.fn(async () => verified?.frames ?? []),
+    storageHealth: vi.fn(async () => ({ usageBytes: null, quotaBytes: null, isPersistent: null })),
+    requestPersistentStorage: vi.fn(async () => false),
+    getOnboardingStatus: vi.fn(async () => null),
+    getTrainingContext: vi.fn(async () => null),
+    setOnboardingStatus: vi.fn(async () => {}),
+    listSessionObservations: vi.fn(async () => []),
+    recordSessionObservation: vi.fn(async () => { throw new Error('本测试不提供观察备注。') }),
   }
   return { repository, failSave: () => { rejectNextSave = true }, read: () => saved }
 }

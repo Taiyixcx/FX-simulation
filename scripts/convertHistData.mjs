@@ -43,7 +43,7 @@ export async function convertHistData(options) {
   if (inputPath.toLowerCase() === outputPath.toLowerCase()) throw new Error('输出不能覆盖原始输入文件。')
   const sourceStat = await stat(inputPath)
   if (!sourceStat.isFile() || sourceStat.size > 2 * 1024 * 1024 * 1024) throw new Error('输入须为不超过 2 GiB 的本机 tick 文件。')
-  const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'error' })
+  const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom', logLevel: 'error' })
   try {
     const { parseHistoryCsv, parseHistoryTimestamp } = await server.ssrLoadModule('/src/engine/historyCsv.ts')
     const fromTimestampMs = options.from ? parseHistoryTimestamp(options.from) : 0

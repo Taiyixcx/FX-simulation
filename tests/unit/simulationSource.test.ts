@@ -18,7 +18,7 @@ describe('version-2 completed-minute simulation', () => {
   it('initializes without generating a frame and supports a finished continuation anchor', () => {
     const initial = initializeSimulation('EUR/USD', 7)
     expect(initial).toMatchObject({
-      version: 2, parameterVersion: 1, scenario: 'standard', frameIndex: -1,
+      version: 2, parameterVersion: 2, scenario: 'standard', frameIndex: -1,
       originFrameIndex: 0, currentBidPrice: initial.initialBidPrice,
       currentAskPrice: initial.initialAskPrice, lastEvent: null,
     })
@@ -47,9 +47,9 @@ describe('version-2 completed-minute simulation', () => {
   })
 
   it.each(['EUR/USD', 'GBP/USD'] as CurrencyPair[])('produces coherent %s Bid OHLC and simultaneous dynamic Ask', (pair) => {
-    let step = createSimulation(pair, 42, { maxFrames: 120 })
+    let step = createSimulation(pair, 42, { maxFrames: 900, scenario: 'eventful', startTimestampMs: Date.UTC(2024, 2, 4, 7, 55) })
     const spreads = new Set<string>()
-    for (let index = 0; index < 120; index += 1) {
+    for (let index = 0; index < 900; index += 1) {
       const { frame } = step
       expect(frame.quote.askSource).toBe('training')
       expect(frame.quote.bidPrice).toBe(frame.closePrice)

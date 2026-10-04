@@ -1,4 +1,5 @@
 import type { MarketFrame, Position, TradeDirection, TradeRecord } from '../../engine/types'
+import type { AggregatedMarketFrame } from '../../engine/frameAggregation'
 
 export interface ChartViewport {
   from: number
@@ -110,6 +111,17 @@ export function buildTradeMarkers(
   return markers.sort((left, right) => left.timestampMs - right.timestampMs)
 }
 
+/** Keep execution time/price, placing only the category key on the observed group. */
+export function mapTradeMarkersToFrames(markers: readonly TradeMarker[], frames: readonly AggregatedMarketFrame[]): TradeMarker[] {
+  const intervalMs = frames[0] ? frames[0].intervalEndMs - frames[0].intervalStartMs : 0
+  const framesByInterval = new Map(frames.map(frame => [frame.intervalStartMs, frame]))
+  return markers.map(marker => {
+    const intervalStartMs = intervalMs ? Math.floor((marker.timestampMs - 1) / intervalMs) * intervalMs : -1
+    const frame = framesByInterval.get(intervalStartMs)
+    return frame ? { ...marker, timestampKey: toTimestampKey(frame.quote.timestampMs) } : { ...marker }
+  })
+}
+
 export function initialViewport(frameCount: number): ChartViewport {
   const to = Math.max(0, frameCount - 1)
   return { from: Math.max(0, frameCount - DEFAULT_VISIBLE_FRAMES), to }
@@ -157,7 +169,8 @@ export function getVisiblePriceRange(
   const fromTimestampMs = visibleFrames[0]!.quote.timestampMs
   const toTimestampMs = visibleFrames.at(-1)!.quote.timestampMs
   for (const marker of markers) {
-    if (marker.timestampMs >= fromTimestampMs && marker.timestampMs <= toTimestampMs) {
+    const plottedTimestampMs = Number(marker.timestampKey)
+    if (plottedTimestampMs >= fromTimestampMs && plottedTimestampMs <= toTimestampMs) {
       prices.push(marker.price)
     }
   }

@@ -43,7 +43,7 @@ function rounded(input) {
 }
 
 const failures = []
-const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' })
+const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom', logLevel: 'error' })
 try {
   const { createSimulation, advanceSimulation } = await server.ssrLoadModule('/src/engine/simulationSource.ts')
   const results = []
