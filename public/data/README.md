@@ -34,3 +34,17 @@ node scripts/convertHistData.mjs --input local-data/DAT_ASCII_EURUSD_T_202403.cs
 工作台读取 [manifest](manifest.json)，载入前核对 CSV 原始字节 SHA-256 后全量导入，数据进入 IndexedDB，当前练习不变。点击“开始历史练习”才开始仅首根可见的独立会话。克隆仓库时没有价格文件，载入会如实提示尚未准备；可手动从官方页面取得对应原文件后转换，或导入自己的规范 CSV。转换后文件必须与 manifest 的哈希一致；不同来源或时间范围使用普通 CSV 导入，不修改旧数据集。
 
 `npm run check:history` 验证本机两份样本的哈希、全部分钟回放与存储恢复；缺少价格文件时失败，不自动下载。具体执行结果见项目 [路线与验收](../../overview/04-roadmap-and-acceptance.md)。
+
+## 有限参数校准的研究输入
+
+2026-10-04 使用两品种 2024-01、2024-03 完整月估计普通波动尺度和点差基准，以 2024-09 完整月作时间留出。原 ZIP、tick 和月度 CSV 只在 `local-data/research/`，不再分发行情。公开 [冻结参数资料](simulation-calibration.json) 只含参数、样本数量和校验元信息；不是行情文件，也不代表事件等机制已完成校准。
+
+本人按官方免费页面及个人测试用途说明取得 Generic ASCII 双边 tick 后，不裁剪月度输出，例如：
+
+```powershell
+node scripts/convertHistData.mjs --input local-data/research/DAT_ASCII_EURUSD_T_202401.csv --output local-data/research/eurusd-202401-m1.csv --pair EUR/USD
+```
+
+同样准备 `eurusd-202403-m1.csv`、`eurusd-202409-m1.csv` 及 GBP/USD 三个月文件，并保留每份转换器生成的 `.csv.metadata.json`。`npm run check:calibration` 核对 CSV 字节哈希，先复核已冻结的估计，再读取 9 月作独立比较，生成 `.vite/calibration-fit.json` 和 `.vite/calibration-validation.json`。样本缺失或损坏明确失败，不自动下载。重新估计若不同，不覆盖现有版本，须按参数版本另行审阅。
+
+原始输入乱序应直接拒绝，不为通过校准而排序或删行。GBP/USD 2024-10 已因乱序拒绝，EUR/USD 2024-10 已探索，两者都未作为留出。方法和适用限制见 [模拟研究](../../knowledge/05-foreign-exchange-simulation.md#校准时区与数据)，业务参数只在 [数据与交易](../../overview/03-data-and-trading.md#模拟行情) 维护。

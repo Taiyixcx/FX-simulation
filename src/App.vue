@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import Decimal from 'decimal.js'
 import AccountSummary from './features/trading/AccountSummary.vue'
 import TradePanel from './features/trading/TradePanel.vue'
@@ -9,14 +9,20 @@ import SimulationEventNotice from './features/replay/SimulationEventNotice.vue'
 import HistoryDataPanel from './features/replay/HistoryDataPanel.vue'
 import TradeJournal from './features/journal/TradeJournal.vue'
 import MarketChart from './features/chart/MarketChart.vue'
+import SessionLibrary from './features/sessions/SessionLibrary.vue'
+import FirstUseGuide from './features/help/FirstUseGuide.vue'
+import ConceptPractice from './features/help/ConceptPractice.vue'
+import PracticeComparison from './features/replay/PracticeComparison.vue'
 import Icon from './components/Icon.vue'
 import InfoTip from './components/InfoTip.vue'
 import { useSessionStore } from './stores/useSessionStore'
-import type { CurrencyPair } from './engine/types'
+import type { CurrencyPair, TradeRecord } from './engine/types'
+import type { OnboardingStatus } from './storage/sessionMetadata'
 import { formatPrice } from './priceFormatting'
 
 const session = useSessionStore()
 const chartType = ref<'line' | 'candlestick'>('line')
+let reviewOrigin: HTMLElement | null = null
 const formattedBid = computed(() => session.currentQuote ? formatPrice(session.currentQuote.bidPrice) : '')
 const saveLabel = computed(() => ({ idle: '等待保存', saving: '保存中…', saved: '已保存到本机', error: '保存失败' })[session.saveStatus])
 const spreadPips = computed(() => session.currentQuote
@@ -52,6 +58,49 @@ function focusJournal() {
   journal?.scrollIntoView({ block: 'start' })
 }
 
+function focusLibrary() {
+  const library = document.getElementById('session-library') as HTMLDetailsElement | null
+  if (!library) return
+  library.open = true
+  const heading = library.querySelector<HTMLElement>('h2')
+  heading?.focus({ preventScroll: true })
+  library.scrollIntoView({ block: 'start' })
+  void session.refreshLibrary()
+}
+
+function recordObservation(input: { reason: string }) { void session.recordObservation(input.reason) }
+
+function openGuide() {
+  const guide = document.getElementById('first-use-guide') as HTMLDetailsElement | null
+  if (!guide) return
+  guide.open = true
+  guide.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true })
+  guide.scrollIntoView({ block: 'nearest' })
+}
+
+async function finishGuide(status: OnboardingStatus) {
+  await session.setOnboardingStatus(status)
+  if (session.onboardingStatus === status) { await nextTick(); focusTrade() }
+}
+
+async function showTradeReview(trade: TradeRecord, action: 'open' | 'close' = 'open') {
+  if (!session.isReviewing) reviewOrigin = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  await session.selectReviewTrade(trade, action)
+  await nextTick()
+  const target = document.querySelector<HTMLElement>(session.isReviewing ? '[data-testid="market-chart"]' : '#review-error')
+  target?.focus({ preventScroll: true })
+  target?.scrollIntoView({ block: 'center' })
+}
+
+async function exitReview() {
+  session.exitReview()
+  await nextTick()
+  const target = reviewOrigin?.isConnected ? reviewOrigin : document.getElementById('trade-journal')
+  target?.focus({ preventScroll: true })
+  target?.scrollIntoView({ block: 'nearest' })
+  reviewOrigin = null
+}
+
 function focusTrade() {
   const target = document.getElementById(session.snapshot?.account.position ? 'position-title' : 'notional-usd')
   target?.focus({ preventScroll: true })
@@ -71,6 +120,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnUnsavedSnapshot)
   session.dispose()
+  reviewOrigin = null
 })
 </script>
 
@@ -83,6 +133,8 @@ onBeforeUnmount(() => {
         <span class="workspace-name">交易工作台</span>
       </div>
       <div class="header-actions">
+        <a v-if="session.snapshot && session.onboardingStatus === null" class="library-link" href="#first-use-guide" @click.prevent="openGuide">三步引导</a>
+        <a class="library-link" href="#session-library" @click.prevent="focusLibrary">练习与备份</a>
         <a v-if="session.snapshot" class="journal-link" href="#trade-journal" @click.prevent="focusJournal"><Icon name="activity" :size="16" />成交记录</a>
         <span class="save-status" role="status" :class="{ 'error-text': session.saveStatus === 'error', 'is-saving': session.saveStatus === 'saving' }" data-testid="save-status"><Icon :name="session.saveStatus === 'saved' ? 'check' : session.saveStatus === 'error' ? 'info' : 'clock'" :size="16" />{{ saveLabel }}</span>
       </div>
@@ -96,6 +148,7 @@ onBeforeUnmount(() => {
         <button v-if="session.saveStatus === 'error' || session.rawRecoveryJson" class="button-outline" @click="exportSnapshot"><Icon name="download" :size="16" />导出当前快照</button>
       </div>
     </section>
+    <section v-if="session.libraryErrorMessage && !session.errorMessage" class="error-banner" aria-label="资料操作提示"><p role="status">{{ session.libraryErrorMessage }}</p><button class="button-outline" @click="focusLibrary">查看练习与备份</button></section>
     <template v-if="session.snapshot && session.currentQuote">
       <AccountSummary />
       <div class="trading-workspace">
@@ -105,7 +158,7 @@ onBeforeUnmount(() => {
               <span class="pair-mark" aria-hidden="true">{{ session.snapshot.pair === 'EUR/USD' ? '€' : '£' }}<span>$</span></span>
               <div class="pair-select"><label for="currency-pair" class="sr-only">货币对</label><select id="currency-pair" :value="session.snapshot.pair" :disabled="!session.canOperate || session.isHistorical" @change="changePair"><option value="EUR/USD">EUR / USD</option><option value="GBP/USD">GBP / USD</option></select><h2 id="market-title" class="sr-only">行情图表</h2></div>
               <span class="source-label"><span class="status-dot" />{{ session.isHistorical ? '历史回放' : `模拟行情 · ${session.scenario === 'eventful' ? '事件练习' : '常规练习'}` }} · 1 分钟</span>
-              <InfoTip v-if="!session.isHistorical" label="模拟行情说明">行情由本机生成，每根代表一分钟，不是真实历史价格。图表只展示已经推进的行情。模型参数是训练设定，尚未按历史样本校准，练习表现不代表实盘表现。</InfoTip>
+              <InfoTip v-if="!session.isHistorical" label="模拟行情说明">行情由本机生成，每根代表一分钟，不是真实历史价格。图表只展示已经推进的行情。{{ session.snapshot.schemaVersion === 3 && session.snapshot.sourceState.parameterVersion === 2 ? '普通波动尺度和点差基准参考2024年历史样本估计；事件、波动持续与时段形状仍是训练设定，未完成全面市场验证。' : '此练习保留原训练参数，尚未按历史样本校准。' }}练习表现不代表实盘表现。</InfoTip>
               <InfoTip v-else label="历史回放说明">图表只展示已经推进的完成分钟，成交使用当前末组 Bid/Ask。分钟回放不复现分钟内逐笔成交；源文件提供 Ask 的行直接使用，缺失行使用训练点差。CSV 的真实性由来源核验单独说明。</InfoTip>
             </div>
             <div class="market-tools">
@@ -128,17 +181,23 @@ onBeforeUnmount(() => {
           </div>
           <SimulationEventNotice />
           <p v-if="session.isHistorical && session.currentGapMinutes > 1" class="history-gap" role="status" data-testid="history-gap">本次跨越 {{ session.currentGapMinutes.toLocaleString('zh-CN') }} 分钟（含休市或数据缺口），按下一条现有报价推进。</p>
-          <MarketChart :frames="session.snapshot.frames" :position="session.snapshot.account.position" :trades="session.snapshot.trades" :session-id="session.snapshot.id" :chart-type="chartType" />
-          <ReplayControls />
+          <p v-if="session.isReviewLoading" class="frame-window-note" role="status">正在读取成交附近的已发生行情…</p>
+          <p v-if="session.reviewError" id="review-error" class="error-text" role="alert" tabindex="-1">{{ session.reviewError }}</p>
+          <MarketChart :frames="session.chartFrames" :position="session.isReviewing ? null : session.snapshot.account.position" :trades="session.snapshot.trades" :session-id="session.snapshot.id" :chart-type="chartType" :is-reviewing="session.isReviewing" :selected-timestamp-ms="session.reviewTimestampMs ?? undefined" @exit-review="exitReview"><template #replay-controls><ReplayControls compact /></template></MarketChart>
           <HistoryDataPanel />
+          <PracticeComparison :can-operate="session.canOperate" :is-historical="session.isHistorical" :context="session.comparisonContext" @repeat-current="session.repeatCurrentPractice()" @start-unseen="session.startUnseenHistoryPractice()" />
+          <p v-if="session.trainingContext?.isImportedClaim" class="frame-window-note">对照标记来自备份声明，未重新核验未见状态。</p>
           <p v-if="session.snapshot.frameStartIndex > 0" class="frame-window-note">图表显示最近 {{ session.snapshot.frames.length.toLocaleString('zh-CN') }} 根，较早行情仍保存在本机。</p>
           <a class="trade-jump" href="#trade-amount" @click.prevent="focusTrade">{{ session.snapshot.account.position ? '查看持仓与平仓' : '去下单' }}<Icon name="arrow-right" :size="16" /></a>
           <p v-if="session.isEnded" class="end-message" role="status"><Icon name="check" :size="16" />{{ session.isCalendarEnded ? '已达到模拟时钟支持范围' : '本轮行情已结束' }}，仍可按最后报价平仓。</p>
         </section>
         <TradePanel @request-recovery-focus="focusRecovery" />
       </div>
-      <TradeJournal />
+      <details v-if="session.onboardingStatus === null" id="first-use-guide" class="onboarding-panel" aria-label="新手三步引导"><summary>第一次练习？查看三步引导（可跳过）</summary><FirstUseGuide @complete="finishGuide('completed')" @skip="finishGuide('skipped')" /></details>
+      <TradeJournal @review-trade="showTradeReview" />
+      <ConceptPractice :is-saving-observation="session.isBusy" :observation-message="session.libraryMessage" @record-observation="recordObservation" />
     </template>
+    <SessionLibrary />
   </main>
 </template>
 
@@ -153,9 +212,14 @@ onBeforeUnmount(() => {
 .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; color: #fff; background: var(--blue); }
 .brand-mark svg { width: 28px; height: 28px; }
 .workspace-name { border-left: 1px solid var(--line); margin-left: 8px; padding-left: 20px; color: var(--muted); font-size: .875rem; }
-.header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+.header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; max-width: 100%; }
 .journal-link { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; font-size: .875rem; color: var(--muted); text-decoration: none; }
 .journal-link:hover { color: var(--text); }
+.library-link { display: inline-flex; align-items: center; min-height: 40px; color: var(--blue); font-size: .875rem; text-decoration: none; }
+.library-link:hover { text-decoration: underline; }
+.onboarding-panel { border-bottom: 1px solid var(--line); font-size: .875rem; }
+.onboarding-panel > summary { min-height: 44px; padding: 10px 24px; color: var(--blue); cursor: pointer; line-height: 1.7; }
+@media (max-width: 600px) { .onboarding-panel > summary { padding-inline: 16px; } }
 .save-status { display: flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 6px; background: var(--blue-soft); color: var(--blue); font-size: .8125rem; min-width: 9.5em; justify-content: center; }
 .save-status .icon { color: var(--green); }
 .save-status.error-text, .save-status.error-text .icon { color: var(--red); }

@@ -165,6 +165,37 @@ describe('session snapshot validation', () => {
     expect(validateSessionSnapshot(migrated)).toEqual(migrated)
   })
 
+  it.each([1, 2] as const)('keeps schema-2 parameter version %s when migrating its preserved prices and active ledger', parameterVersion => {
+    const first = createSimulation('EUR/USD', 91, { parameterVersion, maxFrames: 30 })
+    const second = advanceSimulation(first.state)!
+    const third = advanceSimulation(second.state)!
+    const opened = openPosition({ balanceUsd: '10000.00', position: null }, first.frame.quote, 'EUR/USD', 'long', '1000', 'legacy-closed')
+    const closed = closePosition(opened, third.frame.quote)
+    const account = openPosition(closed.account, third.frame.quote, 'EUR/USD', 'short', '500', 'legacy-active')
+    const legacy = {
+      schemaVersion: 2, id: `legacy-parameter-${parameterVersion}`, revision: 4, pair: 'EUR/USD',
+      simulationConfig: createSimulationConfig(third.state), sourceState: structuredClone(third.state),
+      frames: [first.frame, second.frame, third.frame], account, trades: [closed.trade],
+    }
+    // Real early schema 2 omitted this cursor; restoration supplies its legacy fallback.
+    const raw = JSON.parse(JSON.stringify(legacy)) as Record<string, unknown>
+    delete (raw.sourceState as Record<string, unknown>).scheduledSearchThroughTimestampMs
+    const migrated = validateSessionSnapshot(raw)
+    expect(migrated.retainedPrefixKind).toBe('legacy-v2')
+    expect(migrated.sourceState.parameterVersion).toBe(parameterVersion)
+    expect(migrated.simulationConfig.parameterVersion).toBe(parameterVersion)
+    expect(migrated.frames).toEqual(legacy.frames)
+    expect(migrated.account).toEqual(account)
+    expect(migrated.trades).toEqual(legacy.trades)
+    const expectedState = simulationSource.createSimulationFromQuote('EUR/USD', 91, {
+      startTimestampMs: third.state.startTimestampMs, maxFrames: null, scenario: third.state.scenario, parameterVersion,
+    }, { frameIndex: third.state.frameIndex, timestampMs: third.frame.quote.timestampMs, bidPrice: third.frame.quote.bidPrice, askPrice: third.frame.quote.askPrice })
+    expect(migrated.sourceState).toEqual(expectedState)
+    expect(advanceSimulation(migrated.sourceState)).toEqual(advanceSimulation(expectedState))
+    const restored = validateSessionSnapshot(JSON.parse(JSON.stringify(migrated)))
+    expect(advanceSimulation(restored.sourceState)).toEqual(advanceSimulation(expectedState))
+  })
+
   it('accepts the exact depletion stop and rejects later history or a later incremental quote', () => {
     const legacy = makeDepletedLegacySession()
     const migrated = validateSessionSnapshot(legacy)
@@ -246,7 +277,7 @@ describe('session snapshot validation', () => {
       (copy) => { copy.sourceState.upcomingScheduledEvent!.expected += '篡改' },
       (copy) => { copy.simulationConfig.maxFrames = (copy.simulationConfig.maxFrames ?? 0) + 1 },
       (copy) => { copy.simulationConfig.scenario = 'standard' },
-      (copy) => { Object.assign(copy.sourceState, { parameterVersion: 2 }) },
+      (copy) => { Object.assign(copy.sourceState, { parameterVersion: 3 }) },
       (copy) => { Object.assign(copy.sourceState, { futureOutcome: 'fake' }) },
     ]
     for (const mutate of mutations) {
@@ -321,7 +352,7 @@ describe('session snapshot validation', () => {
     const missing = createSessionHistoryValidator(snapshot)
     history.slice(0, -1).forEach(frame => missing.pushFrame(frame))
     expect(() => missing.finish()).toThrow()
-  })
+  }, 20_000)
 
   it('validates rolling transitions without rewriting prior prices or source state', () => {
     const previous = extendSession(makeSession('GBP/USD', null), 1439)

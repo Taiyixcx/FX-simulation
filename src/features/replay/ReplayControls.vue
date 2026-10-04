@@ -5,8 +5,9 @@ import Icon from '../../components/Icon.vue'
 import InfoTip from '../../components/InfoTip.vue'
 
 const session = useSessionStore()
-const frameCount = computed(() => session.snapshot ? session.snapshot.sourceState.frameIndex + 1 : 0)
-const maxFrames = computed(() => session.snapshot?.sourceState.maxFrames ?? null)
+withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+const frameCount = computed(() => session.progressedFrameCount)
+const maxFrames = computed(() => session.totalPracticeFrameCount)
 const isContinuous = computed(() => maxFrames.value === null)
 const progressPercent = computed(() => maxFrames.value ? frameCount.value / maxFrames.value * 100 : 0)
 const playbackState = computed(() => session.isEnded ? '已结束' : session.isPlaying ? '播放中' : '已暂停')
@@ -28,7 +29,7 @@ function togglePlayback() {
 </script>
 
 <template>
-  <div class="replay-controls" aria-label="行情回放控制">
+  <div class="replay-controls" :class="{ 'is-compact': compact }" aria-label="行情回放控制">
     <div class="replay-toolbar">
       <div class="playback-actions">
         <button class="playback-toggle button-primary" :aria-label="session.isPlaying ? '暂停' : '播放'" :disabled="!session.isPlaying && !session.canAdvance" @click="togglePlayback"><Icon :name="session.isPlaying ? 'pause' : 'play'" :size="16" /><span>{{ session.isPlaying ? '暂停' : '播放' }}</span></button>
@@ -47,6 +48,9 @@ function togglePlayback() {
 
 <style scoped>
 .replay-controls { border-top: 1px solid var(--line); padding: 12px 0 0; }
+.replay-controls.is-compact { border-top: 0; padding: 0; }
+.replay-controls.is-compact .replay-toolbar { padding-bottom: 0; gap: 8px 12px; }
+.replay-controls.is-compact .progress-track { margin-top: 4px; }
 .replay-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-width: 0; padding-bottom: 12px; }
 .playback-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .playback-actions button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 40px; padding: 8px 13px; border-radius: 8px; font-size: .8125rem; font-weight: 500; }

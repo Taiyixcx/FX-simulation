@@ -10,6 +10,8 @@ export interface HistoryMetadata {
   originalTimezone: string
   quoteType: HistoryQuoteType
   verified: boolean
+  /** A restored backup claimed verification; this never establishes local trust. */
+  restoredVerificationClaim?: boolean
   period: 'M1'
   startTimestampMs: number
   endTimestampMs: number
@@ -51,4 +53,12 @@ export interface HistoryCsvIssue {
   line: number
   field: string
   message: string
+}
+
+export interface HistoryProcessingControls {
+  signal?: { readonly aborted: boolean }
+  batchSize?: number
+  /** Scheduling belongs to the caller; UI code can inject a macrotask yield. */
+  yieldControl?: () => Promise<void>
+  onProgress?: (processed: number, total: number, phase: 'reading' | 'validating' | 'fingerprint') => void
 }

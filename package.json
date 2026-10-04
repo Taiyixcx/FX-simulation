@@ -8,12 +8,13 @@
   },
   "scripts": {
     "dev": "vite",
-    "start": "vite preview",
+    "start": "node scripts/startLocal.mjs --no-open",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/runTests.mjs",
     "check:simulation": "node scripts/checkSimulation.mjs",
     "check:continuous": "node scripts/checkContinuousSimulation.mjs",
     "check:history": "node scripts/checkHistorySamples.mjs",
+    "check:calibration": "node scripts/calibrateSimulation.mjs",
     "convert:histdata": "node scripts/convertHistData.mjs",
     "test:e2e": "playwright test",
     "build": "vue-tsc --noEmit && vite build"

@@ -7,7 +7,7 @@ import { createServer } from 'vite'
 // Long-run lifecycle check in Node/fake-indexeddb, not a browser quota or market calibration.
 const FRAME_COUNT = 50_000
 const BATCH_SIZE = 100
-const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' })
+const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom', logLevel: 'error' })
 let repository
 try {
   const { createSimulation, advanceSimulation } = await server.ssrLoadModule('/src/engine/simulationSource.ts')

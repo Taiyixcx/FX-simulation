@@ -112,7 +112,7 @@
 
 ### P12：下单面板靠近图表
 
-[How do I switch my order panel mode?](https://www.tradingview.com/support/solutions/43000480915-how-do-i-switch-my-order-panel-mode/) · **TradingView｜官方帮助与面板示例**。核对日期：**2026-10-01**。对应：[连续工作台与交易侧栏](../overview/01-product-and-design.md#p1-工作台布局)。
+[How do I switch my order panel mode?](https://www.tradingview.com/support/solutions/43000480915-how-do-i-switch-my-order-panel-mode/) · **TradingView｜官方帮助与面板示例**。核对日期：**2026-10-01**。对应：[连续工作台与交易侧栏](../overview/01-product-and-design.md#当前工作台布局)。
 
 - 已核查：官方展示下单面板在图表旁停靠及其他显示模式，强调面板与观察区域之间的关系。
 - 借鉴：图表与报价为主，输入、方向、持仓和结算在邻近侧栏内形成稳定层次；相近控件共用基线、间距和字级。

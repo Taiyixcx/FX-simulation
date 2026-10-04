@@ -2,9 +2,10 @@ import { validateCurrencyPair } from './account'
 import { decimalToString, MoneyDecimal } from './decimal'
 import {
   calculateHistoryFingerprint, getHistoryDatasetId, getHistoryQuoteType,
-  HISTORY_MAX_FRAMES, sha256Text, validateHistoryDataset,
+  checkpointHistoryProcessing, getHistoryProcessingBatchSize, HISTORY_MAX_FRAMES,
+  sha256Text, throwIfHistoryCancelled, validateHistoryDataset,
 } from './historySource'
-import type { HistoryCsvIssue, HistoryDataset, HistoryMetadata } from './historyTypes'
+import type { HistoryCsvIssue, HistoryDataset, HistoryMetadata, HistoryProcessingControls } from './historyTypes'
 import type { CurrencyPair, MarketFrame } from './types'
 
 export const HISTORY_CSV_MAX_BYTES = 20 * 1024 * 1024
@@ -31,7 +32,7 @@ function error(line: number, field: string, message: string): never {
 }
 
 /** Strict CSV quoting, including BOM, CRLF and physical-line diagnostics. */
-function readCsvRecords(text: string): CsvRecord[] {
+function* readCsvRecords(text: string, characterBatchSize: number): Generator<number, CsvRecord[]> {
   const records: CsvRecord[] = []
   let cells: string[] = []
   let cell = ''
@@ -41,7 +42,12 @@ function readCsvRecords(text: string): CsvRecord[] {
   let hasClosedQuote = false
   let hasCsvStructure = false
   const input = text.replace(/^\uFEFF/, '')
+  let nextCheckpoint = characterBatchSize
   for (let index = 0; index < input.length; index += 1) {
+    if (index >= nextCheckpoint) {
+      yield index
+      nextCheckpoint = index + characterBatchSize
+    }
     const character = input[index]
     if (isQuoted) {
       if (character === '"') {
@@ -85,6 +91,18 @@ function readCsvRecords(text: string): CsvRecord[] {
   return records
 }
 
+async function collectCsvRecords(text: string, batchSize: number, controls?: HistoryProcessingControls): Promise<CsvRecord[]> {
+  const reader = readCsvRecords(text, Math.min(65_536, Math.max(4096, batchSize * 256)))
+  if (controls) await checkpointHistoryProcessing(controls, 0, text.length, 'reading')
+  let step = reader.next()
+  while (!step.done) {
+    if (controls) await checkpointHistoryProcessing(controls, step.value, text.length, 'reading')
+    step = reader.next()
+  }
+  if (controls) await checkpointHistoryProcessing(controls, text.length, text.length, 'reading')
+  return step.value
+}
+
 /** ISO completed-minute time. No Date.parse normalization of impossible dates. */
 export function parseHistoryTimestamp(input: string, line = 1): number {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/.exec(input)
@@ -115,11 +133,13 @@ function readPrice(input: string, line: number, field: string): InstanceType<typ
 }
 
 /** No dataset is returned until every row has passed and its checksum is ready. */
-export async function parseHistoryCsv(text: string, pair: CurrencyPair, metadata: Partial<HistoryMetadata> = {}): Promise<HistoryDataset> {
+export async function parseHistoryCsv(text: string, pair: CurrencyPair, metadata: Partial<HistoryMetadata> = {}, controls?: HistoryProcessingControls): Promise<HistoryDataset> {
+  const batchSize = getHistoryProcessingBatchSize(controls)
+  throwIfHistoryCancelled(controls)
   validateCurrencyPair(pair)
   if (typeof text !== 'string' || text.length > HISTORY_CSV_MAX_BYTES
     || new TextEncoder().encode(text).length > HISTORY_CSV_MAX_BYTES) error(1, 'file', 'CSV 文件最大为 20 MiB。')
-  const records = readCsvRecords(text)
+  const records = await collectCsvRecords(text, batchSize, controls)
   if (records.length < 2) error(1, 'file', '需要表头及至少一条有效行情。')
   const header = records[0].cells.map((cell) => cell.trim())
   if ((header.length !== 5 && header.length !== 6) || header.some((field, index) => field !== FIELD_NAMES[index])) error(records[0].line, 'header', '表头须为 timestamp,open,high,low,close，可选最后一列 ask。')
@@ -128,7 +148,9 @@ export async function parseHistoryCsv(text: string, pair: CurrencyPair, metadata
   const issues: HistoryCsvIssue[] = []
   let issueCount = 0
   let previousTimestampMs = -1
-  for (const record of records.slice(1)) {
+  if (controls) await checkpointHistoryProcessing(controls, 0, records.length - 1, 'validating')
+  for (let recordIndex = 1; recordIndex < records.length; recordIndex += 1) {
+    const record = records[recordIndex]!
     try {
       if (record.cells.length !== header.length) error(record.line, 'columns', `本行须含 ${header.length} 列，实际为 ${record.cells.length} 列。`)
       const cells = record.cells.map((cell) => cell.trim())
@@ -151,9 +173,11 @@ export async function parseHistoryCsv(text: string, pair: CurrencyPair, metadata
       issueCount += cause.issues.length
       if (issues.length < MAX_ISSUES) issues.push(...cause.issues.slice(0, MAX_ISSUES - issues.length))
     }
+    if (controls && (recordIndex % batchSize === 0 || recordIndex === records.length - 1)) await checkpointHistoryProcessing(controls, recordIndex, records.length - 1, 'validating')
   }
+  throwIfHistoryCancelled(controls)
   if (issues.length) throw new HistoryCsvError(issues, issueCount)
-  const fingerprint = await calculateHistoryFingerprint(pair, frames)
+  const fingerprint = await calculateHistoryFingerprint(pair, frames, controls)
   const dataset: HistoryDataset = {
     id: getHistoryDatasetId(pair, fingerprint), pair, frames, fingerprint,
     metadata: {
@@ -165,9 +189,10 @@ export async function parseHistoryCsv(text: string, pair: CurrencyPair, metadata
       verified: metadata.verified === true,
       period: 'M1', quoteType: getHistoryQuoteType(frames), recordCount: frames.length,
       startTimestampMs: frames[0].quote.timestampMs, endTimestampMs: frames.at(-1)!.quote.timestampMs,
-      fileSha256: await sha256Text(text),
+      fileSha256: await sha256Text(text, controls),
     },
   }
-  await validateHistoryDataset(dataset)
+  await validateHistoryDataset(dataset, controls)
+  throwIfHistoryCancelled(controls)
   return dataset
 }

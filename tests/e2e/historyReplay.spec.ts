@@ -95,7 +95,7 @@ test('导入混合 Ask，历史仅暴露已推进前缀，缺口与末尾允许�
   await waitSaved(page)
   const initial = await readSnapshot<PersistedPractice>(page)
   expect(initial.id).not.toBe(simulation.id)
-  expect(initial.account.balanceUsd).toBe('10000')
+  expect(initial.account.balanceUsd).toBe('10000.00')
   expect(initial.frames).toHaveLength(1)
   expect(initial.frames[0]!.quote.bidPrice).toBe('1.1002')
   expect(initial.frames[0]!.quote.askPrice).toBe('1.10035')

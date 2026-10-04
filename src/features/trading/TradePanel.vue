@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useSessionStore } from '../../stores/useSessionStore'
-import { openPosition } from '../../engine/execution'
+import { openPosition, previewPositionRisk, previewTradeRisk } from '../../engine/execution'
+import type { PositionRiskPreview, TradeRiskPreview } from '../../engine/execution'
+import Decimal from 'decimal.js'
+import TradeAnnotationEditor from '../journal/TradeAnnotationEditor.vue'
+import { TRADE_ANNOTATION_MAX_LENGTH } from '../../storage/sessionMetadata'
+import type { TradeAnnotationInput } from '../../storage/sessionMetadata'
 import type { TradeDirection } from '../../engine/types'
 import { formatUsd, formatPrice, formatPnl, getPnlTone, formatTimestamp } from '../../priceFormatting'
 import Icon from '../../components/Icon.vue'
@@ -10,6 +15,62 @@ import InfoTip from '../../components/InfoTip.vue'
 const session = useSessionStore()
 const emit = defineEmits<{ 'request-recovery-focus': [] }>()
 const notionalUsd = ref('1000')
+const entryReason = ref('')
+const exitPlan = ref('')
+const riskDirection = ref<TradeDirection>('long')
+const hypotheticalExitPrice = ref('')
+const positionHypotheticalExitPrice = ref('')
+const positionRiskResult = computed<{ preview: PositionRiskPreview | null; error: string }>(() => {
+  if (!session.snapshot?.account.position || !session.currentQuote) return { preview: null, error: '' }
+  try { return { preview: previewPositionRisk(session.snapshot.account, session.currentQuote, positionHypotheticalExitPrice.value), error: '' } }
+  catch (error) { return { preview: null, error: error instanceof Error ? error.message : '请检查假设退出报价。' } }
+})
+const riskResult = computed<{ preview: TradeRiskPreview | null; error: string }>(() => {
+  if (!session.snapshot || !session.currentQuote || session.snapshot.account.position) return { preview: null, error: '' }
+  try { return { preview: previewTradeRisk(session.snapshot.account, session.currentQuote, session.snapshot.pair, riskDirection.value, notionalUsd.value, hypotheticalExitPrice.value), error: '' } }
+  catch (error) { return { preview: null, error: error instanceof Error ? error.message : '请检查预览金额与报价。' } }
+})
+const riskError = computed(() => riskResult.value.error)
+const riskPreview = computed(() => riskResult.value.preview)
+function readAdmission(direction: TradeDirection): TradeRiskPreview | null {
+  if (!session.snapshot || !session.currentQuote || session.snapshot.account.position) return null
+  try { return previewTradeRisk(session.snapshot.account, session.currentQuote, session.snapshot.pair, direction, notionalUsd.value) }
+  catch { return null }
+}
+const longAdmission = computed(() => readAdmission('long'))
+const shortAdmission = computed(() => readAdmission('short'))
+function canOpenDirection(direction: TradeDirection): boolean {
+  return canOpen.value && (direction === 'long' ? longAdmission.value : shortAdmission.value)?.canOpen === true
+}
+function formatRiskNumber(input: string, decimalPlaces: number): string { return new Decimal(input).toFixed(decimalPlaces) }
+const annotationEditor = ref<InstanceType<typeof TradeAnnotationEditor> | null>(null)
+const annotationMessage = ref('')
+const annotationHasError = ref(false)
+const isSavingAnnotation = ref(false)
+async function savePositionAnnotation(input: TradeAnnotationInput) {
+  if (!position.value || isSavingAnnotation.value) return
+  isSavingAnnotation.value = true
+  annotationMessage.value = ''
+  annotationHasError.value = false
+  try {
+    if (await session.saveTradeAnnotation(position.value.id, input)) { annotationMessage.value = '计划修订已保存到本机。'; await nextTick(); annotationEditor.value?.reload() }
+    else { annotationHasError.value = true; annotationMessage.value = session.libraryErrorMessage || '计划未保存，当前输入保留。' }
+  } finally { isSavingAnnotation.value = false }
+}
+async function reloadPositionAnnotation() {
+  const positionId = position.value?.id
+  isSavingAnnotation.value = true
+  annotationHasError.value = false
+  try {
+    const loaded = await session.refreshCurrentMetadata()
+    await nextTick()
+    if (position.value?.id !== positionId) return
+    if (loaded) { annotationEditor.value?.reload(); annotationMessage.value = '已读取保存版本。' }
+    else { annotationHasError.value = true; annotationMessage.value = session.libraryErrorMessage || '读取失败，当前输入保留。' }
+  }
+  catch (error) { annotationHasError.value = true; annotationMessage.value = error instanceof Error ? error.message : '读取失败，当前输入保留。' }
+  finally { isSavingAnnotation.value = false }
+}
 const inputError = computed(() => {
   if (!session.snapshot || !session.currentQuote || session.snapshot.account.position) return ''
   try {
@@ -24,6 +85,9 @@ const position = computed(() => session.snapshot?.account.position)
 const orderNote = computed(() => {
   if (session.saveStatus === 'error') return '请先重试本机保存，再继续交易。'
   if (position.value) return '当前已有持仓，请先平仓。'
+  if (longAdmission.value?.rejectionMessage && shortAdmission.value?.rejectionMessage) return longAdmission.value.rejectionMessage
+  if (longAdmission.value?.rejectionMessage) return `买涨不可用：${longAdmission.value.rejectionMessage}`
+  if (shortAdmission.value?.rejectionMessage) return `买跌不可用：${shortAdmission.value.rejectionMessage}`
   return '资金按交易金额占用，平仓后释放。'
 })
 const amountInput = ref<HTMLInputElement | null>(null)
@@ -56,10 +120,12 @@ function focusVisibleControl(target: HTMLElement | null) {
 async function placeOrder(direction: TradeDirection) {
   const previousPositionId = position.value?.id
   clearFeedback()
-  await session.openTrade(direction, notionalUsd.value)
+  await session.openTrade(direction, notionalUsd.value, { entryReason: entryReason.value, exitPlan: exitPlan.value })
   const openedPosition = position.value
   if (session.saveStatus === 'saved' && openedPosition && openedPosition.id !== previousPositionId) {
     showFeedback(`已${direction === 'long' ? '买涨' : '买跌'} · 成交价 ${formatPrice(openedPosition.entryPrice)}`)
+    entryReason.value = ''
+    exitPlan.value = ''
     await nextTick()
     focusVisibleControl(positionTitle.value)
   } else if (session.saveStatus === 'error') {
@@ -84,6 +150,8 @@ async function closeOrder() {
 }
 
 watch(() => session.snapshot?.id, clearFeedback)
+watch(() => session.snapshot?.id, () => { entryReason.value = ''; exitPlan.value = ''; hypotheticalExitPrice.value = ''; annotationMessage.value = '' })
+watch(() => position.value?.id, () => { positionHypotheticalExitPrice.value = ''; annotationMessage.value = '' })
 onBeforeUnmount(clearFeedback)
 </script>
 
@@ -91,6 +159,7 @@ onBeforeUnmount(clearFeedback)
   <aside class="trade-panel" aria-labelledby="trade-title">
     <section id="trade-amount" class="order-section" aria-labelledby="trade-title">
       <div class="panel-heading"><h2 id="trade-title">下单</h2><span class="panel-caption">市价成交<InfoTip label="了解买涨和买跌">买涨（做多）按 Ask 买入、按 Bid 平仓；买跌（做空）按 Bid 卖出、按 Ask 平仓。平仓时结算盈亏。</InfoTip></span></div>
+      <p v-if="session.isReviewing" class="learning-note">正在复盘旧行情；账户未回滚，下单和平仓仍按当前末根报价，不按图表选中时间成交。</p>
       <div class="amount-label"><label for="notional-usd">交易金额<span class="sr-only">（USD）</span></label><InfoTip label="了解交易金额">本练习按交易金额占用资金，平仓后释放。这个金额不表示最大亏损。</InfoTip></div>
       <div class="amount-input" :class="{ 'has-error': !!inputError, 'is-disabled': !session.canOperate || !!position }">
         <input id="notional-usd" ref="amountInput" v-model="notionalUsd" type="text" inputmode="decimal" autocomplete="off" :disabled="!session.canOperate || !!position" :aria-invalid="!!inputError" :aria-describedby="inputError ? 'amount-error order-note' : 'order-note'" />
@@ -99,16 +168,32 @@ onBeforeUnmount(clearFeedback)
       <div class="quick-amounts" aria-label="快捷交易金额"><button v-for="amount in ['100', '500', '1000']" :key="amount" :aria-pressed="notionalUsd === amount" :disabled="!session.canOperate || !!position" @click="notionalUsd = amount">{{ amount }}</button></div>
       <p v-if="inputError" id="amount-error" class="amount-error error-text" role="alert">{{ inputError }}</p>
       <div class="order-buttons">
-        <button class="order-button buy-button" aria-label="买涨（做多）" :aria-describedby="position || session.saveStatus === 'error' ? 'order-note' : undefined" :disabled="!canOpen" @click="placeOrder('long')">
+          <button class="order-button buy-button" aria-label="买涨（做多）" :aria-describedby="position || session.saveStatus === 'error' ? 'order-note' : undefined" :disabled="!canOpenDirection('long')" @click="placeOrder('long')">
           <span class="order-direction"><Icon name="arrow-up-right" :size="18" />买涨 <small>做多</small></span>
           <span v-if="session.currentQuote" class="order-price number"><span>Ask</span><span>{{ formatPrice(session.currentQuote.askPrice) }}</span></span>
         </button>
-        <button class="order-button sell-button" aria-label="买跌（做空）" :aria-describedby="position || session.saveStatus === 'error' ? 'order-note' : undefined" :disabled="!canOpen" @click="placeOrder('short')">
+        <button class="order-button sell-button" aria-label="买跌（做空）" :aria-describedby="position || session.saveStatus === 'error' ? 'order-note' : undefined" :disabled="!canOpenDirection('short')" @click="placeOrder('short')">
           <span class="order-direction"><Icon name="arrow-down-right" :size="18" />买跌 <small>做空</small></span>
           <span v-if="session.currentQuote" class="order-price number"><span>Bid</span><span>{{ formatPrice(session.currentQuote.bidPrice) }}</span></span>
         </button>
       </div>
       <p id="order-note" class="order-note" :class="{ 'is-restricted': !!position || session.saveStatus === 'error' }">{{ orderNote }}</p>
+      <details v-if="!position" class="trade-learning">
+        <summary>风险预览与事前计划（可跳过）</summary>
+        <label for="risk-direction">预览方向</label><select id="risk-direction" v-model="riskDirection" :disabled="!session.canOperate"><option value="long">买涨 · 用 Bid 假设平仓</option><option value="short">买跌 · 用 Ask 假设平仓</option></select>
+        <label for="hypothetical-exit">假设平仓 {{ riskDirection === 'long' ? 'Bid' : 'Ask' }} 报价</label><input id="hypothetical-exit" v-model="hypotheticalExitPrice" inputmode="decimal" type="text" placeholder="可选，例如 1.08500" :disabled="!session.canOperate" />
+        <dl v-if="riskPreview" class="risk-readout">
+          <div><dt>持仓数量（{{ session.snapshot?.pair.split('/')[0] }}）</dt><dd>{{ formatRiskNumber(riskPreview.quantityBaseUnits, 2) }}</dd></div>
+          <div><dt>每 pip 美元变化</dt><dd>{{ formatRiskNumber(riskPreview.usdPerPip, 4) }} USD</dd></div>
+          <div><dt>立即平仓结果</dt><dd :class="getPnlTone(riskPreview.immediateClosePnlUsd)">{{ formatPnl(riskPreview.immediateClosePnlUsd) }}</dd></div>
+          <div v-if="riskPreview.hypotheticalPnlUsd !== null"><dt>假设平仓结果</dt><dd :class="getPnlTone(riskPreview.hypotheticalPnlUsd)">{{ formatPnl(riskPreview.hypotheticalPnlUsd) }}</dd></div>
+        </dl>
+        <p v-if="riskError || riskPreview?.rejectionMessage" class="error-text preview-error" role="status">{{ riskError || riskPreview?.rejectionMessage }}</p>
+        <p class="learning-note">预览使用实际方向和报价关系，未另外扣点差。假设报价和计划价不是自动订单，不保证最大亏损。</p>
+        <label for="planned-entry-reason">下单前进场理由（可选）</label><textarea id="planned-entry-reason" v-model="entryReason" rows="2" :maxlength="TRADE_ANNOTATION_MAX_LENGTH" :disabled="!session.canOperate" />
+        <label for="planned-exit-condition">计划退出条件（可选）</label><textarea id="planned-exit-condition" v-model="exitPlan" rows="2" :maxlength="TRADE_ANNOTATION_MAX_LENGTH" :disabled="!session.canOperate" />
+        <p class="learning-note">随本次开仓保存首次计划，之后修订单独保留。</p>
+      </details>
     </section>
     <section class="position-section" aria-labelledby="position-title">
       <div class="panel-heading"><h2 id="position-title" ref="positionTitle" tabindex="-1">当前持仓</h2><span v-if="position" class="position-count">1 笔</span></div>
@@ -124,6 +209,12 @@ onBeforeUnmount(clearFeedback)
           <div><dt>开仓时间</dt><dd>{{ formatTimestamp(position.openedAtMs) }}</dd></div>
         </dl>
         <button class="close-position" aria-label="平仓" :aria-describedby="session.currentQuote ? 'close-quote' : undefined" :disabled="!session.canOperate" @click="closeOrder"><span>平仓</span><span class="close-action-detail"><span v-if="session.currentQuote" id="close-quote" class="number">{{ position.direction === 'long' ? 'Bid' : 'Ask' }} {{ formatPrice(position.direction === 'long' ? session.currentQuote.bidPrice : session.currentQuote.askPrice) }}</span><Icon name="arrow-right" :size="16" /></span></button>
+        <details class="trade-learning"><summary>持仓金额与假设退出</summary>
+          <label for="position-hypothetical-exit">假设平仓 {{ position.direction === 'long' ? 'Bid' : 'Ask' }} 报价</label><input id="position-hypothetical-exit" v-model="positionHypotheticalExitPrice" inputmode="decimal" type="text" placeholder="可选，输入可平仓一侧报价" />
+          <dl v-if="positionRiskResult.preview"><div><dt>持仓数量（{{ position.pair.split('/')[0] }}）</dt><dd>{{ formatRiskNumber(positionRiskResult.preview.quantityBaseUnits, 2) }}</dd></div><div><dt>每 pip 美元变化</dt><dd>{{ formatRiskNumber(positionRiskResult.preview.usdPerPip, 4) }} USD</dd></div><div><dt>按当前报价平仓</dt><dd :class="getPnlTone(positionRiskResult.preview.immediateClosePnlUsd)">{{ formatPnl(positionRiskResult.preview.immediateClosePnlUsd) }}</dd></div><div v-if="positionRiskResult.preview.hypotheticalPnlUsd !== null"><dt>按假设报价平仓</dt><dd :class="getPnlTone(positionRiskResult.preview.hypotheticalPnlUsd)">{{ formatPnl(positionRiskResult.preview.hypotheticalPnlUsd) }}</dd></div></dl>
+          <p v-if="positionRiskResult.error" class="error-text" role="status">{{ positionRiskResult.error }}</p><p class="learning-note">假设价只帮助理解结果，不会设置订单或保证退出报价。</p>
+        </details>
+        <details class="trade-learning"><summary>查看与修订本笔计划</summary><TradeAnnotationEditor :key="position.id" ref="annotationEditor" :trade-id="position.id" :annotation="session.tradeAnnotations[position.id] ?? null" :disabled="isSavingAnnotation || !session.canOperate" :is-closed="false" :message="annotationMessage" :has-error="annotationHasError" @save="savePositionAnnotation" @reload="reloadPositionAnnotation" /></details>
       </template>
       <div v-else class="empty-position"><span class="empty-position-icon"><Icon name="activity" :size="22" /></span><strong>暂无持仓</strong><p>选择买涨或买跌<br />在这里查看持仓与盈亏</p></div>
       <p class="action-feedback" role="status" aria-live="polite"><Icon v-if="successFeedback" name="check" :size="14" /><span>{{ successFeedback }}<template v-if="settledPnlUsd !== null"> · <span :class="getPnlTone(settledPnlUsd)">{{ formatPnl(settledPnlUsd) }}</span></template></span></p>
@@ -133,6 +224,13 @@ onBeforeUnmount(clearFeedback)
 
 <style scoped>
 .trade-panel { padding: 24px; border-left: 1px solid var(--line); min-width: 0; background: var(--surface-soft); }
+.trade-learning { font-size: .8125rem; line-height: 1.7; margin-top: 10px; border-top: 1px solid var(--line); }
+.trade-learning summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-weight: 500; }
+.trade-learning > label { display: block; margin: 9px 0 5px; }
+.trade-learning > input, .trade-learning > select, .trade-learning > textarea { display: block; width: 100%; min-width: 0; max-width: 100%; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; padding: 8px 10px; }
+.trade-learning > textarea { resize: vertical; line-height: 1.6; }
+.learning-note { color: var(--muted); font-size: .8125rem; margin: 8px 0; }
+.preview-error { margin: 8px 0; overflow-wrap: anywhere; }
 .order-section { min-width: 0; container: order-section / inline-size; scroll-margin-top: 24px; }
 .panel-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .panel-heading h2 { font-size: 1rem; font-weight: 700; line-height: 1.5; letter-spacing: -.015em; }

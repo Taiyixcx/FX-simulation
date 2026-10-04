@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HistoryCsvError, HISTORY_CSV_MAX_BYTES, parseHistoryCsv, parseHistoryTimestamp } from '../../src/engine/historyCsv'
 import { validateHistoryDataset } from '../../src/engine/historySource'
+import type { HistoryProcessingControls } from '../../src/engine/historyTypes'
 
 const header = 'timestamp,open,high,low,close,ask'
 const firstRow = '2024-03-04T00:01:00Z,1.10000,1.10040,1.09980,1.10020,1.10035'
@@ -133,6 +134,65 @@ describe('normalized completed-minute CSV import', () => {
     const badMetadata = structuredClone(dataset)
     badMetadata.metadata.recordCount = 2
     await expect(validateHistoryDataset(badMetadata)).rejects.toThrow('记录数')
+  })
+})
+
+function longCsv(recordCount: number): string {
+  const firstTimestampMs = Date.parse('2024-03-04T00:01:00Z')
+  return ['\uFEFF' + header, ...Array.from({ length: recordCount }, (_, index) => {
+    const timestamp = new Date(firstTimestampMs + index * 60_000).toISOString()
+    return `"${timestamp}","1.00000",1.00020,0.99980,1.00000,${index % 3 ? '1.00015' : ''}`
+  })].join('\r\n')
+}
+
+describe('bounded and cancellable CSV processing', () => {
+  it('preserves the exact canonical fingerprint and CSV file hash while yielding in all processing phases', async () => {
+    const csv = longCsv(3000)
+    const progress: Array<{ processed: number; total: number; phase: string }> = []
+    let yields = 0
+    const dataset = await parseHistoryCsv(csv, 'EUR/USD', { licenseNotes: '原始许可说明', restoredVerificationClaim: false }, {
+      yieldControl: async () => { yields += 1 },
+      onProgress: (processed, total, phase) => { progress.push({ processed, total, phase }) },
+    })
+    const originalCanonicalRecords = dataset.frames.map(frame => [frame.quote.timestampMs, frame.openPrice, frame.highPrice, frame.lowPrice, frame.closePrice, frame.quote.bidPrice, frame.quote.askPrice, frame.quote.askSource])
+    expect(dataset.fingerprint).toBe(createHash('sha256').update(JSON.stringify(['EUR/USD', originalCanonicalRecords]), 'utf8').digest('hex'))
+    expect(dataset.metadata.fileSha256).toBe(createHash('sha256').update(csv, 'utf8').digest('hex'))
+    expect(dataset).toEqual(await parseHistoryCsv(csv, 'EUR/USD', { licenseNotes: '原始许可说明', restoredVerificationClaim: false }))
+    expect(progress.some(item => item.phase === 'reading' && item.processed > 0 && item.processed < item.total)).toBe(true)
+    expect(progress.some(item => item.phase === 'validating' && item.processed === 256)).toBe(true)
+    expect(progress.some(item => item.phase === 'fingerprint' && item.processed === 256)).toBe(true)
+    expect(yields).toBeGreaterThan(20)
+    expect(dataset.metadata.licenseNotes).toBe('原始许可说明')
+    expect(dataset.metadata.restoredVerificationClaim).toBe(false)
+  })
+
+  it.each(['reading', 'validating', 'fingerprint'] as const)('cancels during %s without returning a partial candidate', async phaseToCancel => {
+    const signal = { aborted: false }
+    let cancelledAt = 0
+    const controls: HistoryProcessingControls = {
+      signal, batchSize: 32,
+      yieldControl: async () => {},
+      onProgress: (processed, total, phase) => {
+        if (phase === phaseToCancel && processed > 0 && processed < total) { signal.aborted = true; cancelledAt = processed }
+      },
+    }
+    await expect(parseHistoryCsv(longCsv(1000), 'EUR/USD', {}, controls)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(cancelledAt).toBeGreaterThan(0)
+  })
+
+  it('rejects an already cancelled request and an invalid batch before parsing', async () => {
+    await expect(parseHistoryCsv(`${header}\n${firstRow}`, 'EUR/USD', {}, { signal: { aborted: true } })).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(parseHistoryCsv(`${header}\n${firstRow}`, 'EUR/USD', {}, { batchSize: 0 })).rejects.toThrow('分批根数')
+  })
+
+  it('still scans all invalid records and retains physical CSV line diagnostics across batches', async () => {
+    const csv = [header, '"bad\ntime",1,1,1,1,1', ...Array.from({ length: 39 }, () => 'bad,1,1,1,1,1')].join('\n')
+    let validatedCount = 0
+    await expect(parseHistoryCsv(csv, 'EUR/USD', {}, {
+      batchSize: 8, yieldControl: async () => {},
+      onProgress: (processed, _total, phase) => { if (phase === 'validating') validatedCount = processed },
+    })).rejects.toMatchObject({ issueCount: 40, issues: expect.arrayContaining([expect.objectContaining({ line: 2 }), expect.objectContaining({ line: 32 })]) })
+    expect(validatedCount).toBe(40)
   })
 })
 import { createHash } from 'node:crypto'

@@ -1,0 +1,78 @@
+{
+  "parameterVersion": 2,
+  "estimationMonths": [
+    "202401",
+    "202403"
+  ],
+  "holdoutMonth": "202409",
+  "method": "Whole-month contiguous completed-minute midpoint returns; existing calendar seasonality normalization; robust scale matched to legacy reference simulations. Median spread baseline matched with existing minimum floor.",
+  "pairs": {
+    "EUR/USD": {
+      "minuteReturnStd": 0.00007458125,
+      "baseSpreadPrice": "0.00003"
+    },
+    "GBP/USD": {
+      "minuteReturnStd": 0.00009644406,
+      "baseSpreadPrice": "0.00010"
+    }
+  },
+  "samples": [
+    {
+      "pair": "EUR/USD",
+      "month": "202401",
+      "role": "fit",
+      "filename": "eurusd-202401-m1.csv",
+      "recordCount": 31703,
+      "startTimestampMs": 1704146460000,
+      "endTimestampMs": 1706763600000,
+      "fileSha256": "3d6322916a235cbcc4a96462a41eb297aac0f052d5e97d22453e97623f7a0329",
+      "fingerprint": "2b3889f57bc535fd3f50f0c6ecfdfe982e88041e447a9be159a7a1a949ea1124",
+      "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+      "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/"
+    },
+    {
+      "pair": "EUR/USD",
+      "month": "202403",
+      "role": "fit",
+      "filename": "eurusd-202403-m1.csv",
+      "recordCount": 30026,
+      "startTimestampMs": 1709269260000,
+      "endTimestampMs": 1711947600000,
+      "fileSha256": "8adde6da68f1976a9a87ef55867c70e0047d682181807e261a87ceba2e38d689",
+      "fingerprint": "6d3ab62ffbe8160db25d93fe357e9a4b4f42130ef27abfcf675157e8a101cbb8",
+      "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+      "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/"
+    },
+    {
+      "pair": "GBP/USD",
+      "month": "202401",
+      "role": "fit",
+      "filename": "gbpusd-202401-m1.csv",
+      "recordCount": 31938,
+      "startTimestampMs": 1704146460000,
+      "endTimestampMs": 1706763600000,
+      "fileSha256": "a580ea3d3090de22c2a4ee751e57652247111eec672207dbc0c0bd0b568b5c73",
+      "fingerprint": "c0b31a34664595af4804af54006135f116cd9ad1f4beabd9825d7cf5a84c6583",
+      "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+      "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/"
+    },
+    {
+      "pair": "GBP/USD",
+      "month": "202403",
+      "role": "fit",
+      "filename": "gbpusd-202403-m1.csv",
+      "recordCount": 30022,
+      "startTimestampMs": 1709269260000,
+      "endTimestampMs": 1711947600000,
+      "fileSha256": "f2cb09314b13aea1bbcfc7a0d3759b17019cb9b10c4b7a0a864474c0309eb42e",
+      "fingerprint": "e378603e8a0fede5e00a91eebc3f9088a5eb8ba3dee334b8ad7959fbbfd1b63a",
+      "originalTimezone": "固定 EST / UTC−05:00（不采用夏令时）",
+      "sourceUrl": "https://www.histdata.com/f-a-q/data-files-detailed-specification/"
+    }
+  ],
+  "limitations": [
+    "Single provider, limited periods; no claim of whole-market realism.",
+    "Only ordinary return scale and baseline spread are estimated. Event frequency, event effects, persistence and seasonality shape remain training assumptions.",
+    "GBPUSD 202410 was rejected for out-of-order raw ticks; no sorting or row deletion. EURUSD 202410 was explored and is not a holdout."
+  ]
+}

@@ -5,5 +5,6 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/unit/**/*.test.ts'],
     restoreMocks: true,
+    maxWorkers: 2,
   },
 })

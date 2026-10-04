@@ -1,7 +1,8 @@
 import type { CurrencyPair, SimulationScenario } from './types'
+import calibration from '../../public/data/simulation-calibration.json' with { type: 'json' }
 
-/** Versioned training assumptions, not estimates calibrated to a historical sample. */
-export const SIMULATION_PARAMETER_VERSION = 1
+/** Version 1 stays reproducible; version 2 estimates ordinary scale/spread only. */
+export const SIMULATION_PARAMETER_VERSION = 2
 export const SIMULATION_MINUTE_MS = 60_000
 export const SIMULATION_DAY_MS = 86_400_000
 export const SIMULATION_SUBSTEPS = 12
@@ -35,6 +36,17 @@ export const SIMULATION_PAIR_PARAMETERS: Readonly<Record<CurrencyPair, {
     minuteReturnStd: 0.00013, eventReturnStd: 0.00085,
   }),
 })
+
+const CALIBRATED_PAIR_PARAMETERS: typeof SIMULATION_PAIR_PARAMETERS = Object.freeze({
+  'EUR/USD': Object.freeze({ ...SIMULATION_PAIR_PARAMETERS['EUR/USD'], ...calibration.pairs['EUR/USD'] }),
+  'GBP/USD': Object.freeze({ ...SIMULATION_PAIR_PARAMETERS['GBP/USD'], ...calibration.pairs['GBP/USD'] }),
+})
+
+export function getSimulationPairParameters(pair: CurrencyPair, parameterVersion: 1 | 2 = SIMULATION_PARAMETER_VERSION) {
+  if (parameterVersion === 1) return SIMULATION_PAIR_PARAMETERS[pair]
+  if (parameterVersion === 2) return CALIBRATED_PAIR_PARAMETERS[pair]
+  throw new Error('不支持此模拟参数版本；不会静默更换旧练习的参数。')
+}
 
 export const SIMULATION_SCENARIO_PARAMETERS: Readonly<Record<SimulationScenario, {
   londonDataProbability: number
