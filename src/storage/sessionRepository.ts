@@ -1,7 +1,7 @@
 import { copySessionSnapshot, createSessionHistoryValidator, SESSION_FRAME_WINDOW_SIZE, validateSessionSnapshot, validateSessionTransition } from './sessionSnapshot'
 import type { SessionSnapshot } from './sessionSnapshot'
 import type { MarketFrame } from '../engine/types'
-import { throwIfHistoryCancelled, validateHistoryDataset, validateHistoryDatasetSummary } from '../engine/historySource'
+import { sha256Text, throwIfHistoryCancelled, validateHistoryDataset, validateHistoryDatasetSummary } from '../engine/historySource'
 import type { HistoryDataset, HistoryDatasetSummary, HistoryProcessingControls } from '../engine/historyTypes'
 import { copyPracticeSnapshot, isHistoricalSnapshot, validateHistoricalSnapshot, validateHistoricalTransition } from './historicalSessionSnapshot'
 import type { HistoricalSessionSnapshot, PracticeSnapshot } from './historicalSessionSnapshot'
@@ -56,6 +56,17 @@ export class SessionLoadError extends Error {
 
 interface CurrentPointer { id: string; revision: number }
 interface HistoryChunk { sessionId: string; chunkIndex: number; frames: MarketFrame[] }
+interface ArchiveCheckpoint {
+  sessionId: string
+  revision: number
+  frameCount: number
+  currentTimestampMs: number
+  epoch: string
+  generation: number
+  headFingerprint: string
+  verifiedHeadFingerprint: string
+  chunkFingerprints: Map<number, string>
+}
 
 function parsePointer(input: unknown): CurrentPointer | null {
   if (input === undefined) return null
@@ -98,6 +109,30 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   let baselineState: LibraryState | null = null
   const pendingBackups = new Map<string, { backup: ValidatedBackup; state: LibraryState; mode: 'empty' | 'append'; localCurrentSessionId: string | null }>()
   let backupRequestGeneration = 0
+  // Only fingerprints are retained; archived frames remain owned by IndexedDB.
+  let archiveCheckpoint: ArchiveCheckpoint | null = null
+  let archiveScope = 0
+
+  function invalidateArchiveCheckpoint(): void { archiveCheckpoint = null; archiveScope += 1 }
+  function fingerprintRecord(input: unknown): Promise<string> { return sha256Text(JSON.stringify(input)) }
+  async function createArchiveCheckpoint(raw: unknown, head: SessionSnapshot, chunkFingerprints: Map<number, string>, state: LibraryState): Promise<ArchiveCheckpoint> {
+    return { sessionId: head.id, revision: head.revision, frameCount: head.sourceState.frameIndex + 1,
+      currentTimestampMs: head.sourceState.currentTimestampMs, epoch: state.epoch, generation: state.generation,
+      headFingerprint: await fingerprintRecord(raw), verifiedHeadFingerprint: await fingerprintRecord(head), chunkFingerprints }
+  }
+  async function validateArchiveFrames(validator: ReturnType<typeof createSessionHistoryValidator>, frames: MarketFrame[]): Promise<void> {
+    let batchStartedAt = performance.now()
+    let batchFrameCount = 0
+    for (let index = 0; index < frames.length; index += 1) {
+      validator.pushFrame(frames[index]!)
+      batchFrameCount += 1
+      if (batchFrameCount >= 128 || performance.now() - batchStartedAt >= 16) {
+        await yieldToEventLoop()
+        batchStartedAt = performance.now()
+        batchFrameCount = 0
+      }
+    }
+  }
 
   function openDatabase(): Promise<IDBDatabase> {
     if (databasePromise) return databasePromise
@@ -143,7 +178,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       request.onblocked = () => { wasBlocked = true; reject(new Error('其他窗口占用了本地数据库，请关闭其他练习窗口后重试。')) }
       request.onsuccess = () => {
         if (wasBlocked) { request.result.close(); return }
-        request.result.onversionchange = () => { request.result.close(); databasePromise = null; baseline = undefined; baselineState = null; verifiedDataset = null; verifiedHead = null }
+        request.result.onversionchange = () => { request.result.close(); databasePromise = null; baseline = undefined; baselineState = null; verifiedDataset = null; verifiedHead = null; invalidateArchiveCheckpoint() }
         resolve(request.result)
       }
     }).catch((error: unknown) => { databasePromise = null; throw error })
@@ -153,8 +188,22 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   async function currentState(): Promise<LibraryState> {
     return readLibraryState(await readStored(await openDatabase(), 'settings', 'library'))
   }
+  function readCurrentFence(database: IDBDatabase): Promise<{ state: LibraryState; pointer: CurrentPointer | null }> {
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction('settings', 'readonly')
+      let state: LibraryState
+      let pointer: CurrentPointer | null = null
+      let failure: unknown = null
+      const library = transaction.objectStore('settings').get('library')
+      library.onsuccess = () => { try { state = readLibraryState(library.result as unknown) } catch (error) { failure = error; transaction.abort() } }
+      const current = transaction.objectStore('settings').get('current')
+      current.onsuccess = () => { try { pointer = parsePointer(current.result as unknown) } catch (error) { failure = error; transaction.abort() } }
+      transaction.oncomplete = () => resolve({ state, pointer })
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取练习版本失败。'))
+    })
+  }
   function sameState(left: LibraryState, right: LibraryState): boolean {
-    return left.epoch === right.epoch && left.sequence === right.sequence
+    return left.epoch === right.epoch && left.sequence === right.sequence && left.generation === right.generation
   }
   async function writeTransaction(
     stores: string[], work: (transaction: IDBTransaction, abort: (error: unknown) => void) => void,
@@ -278,6 +327,8 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   }
 
   async function loadCurrent(): Promise<PracticeSnapshot | null> {
+    invalidateArchiveCheckpoint()
+    const scope = archiveScope
     baseline = undefined
     verifiedHead = null
     pendingMigrationFrames = null
@@ -318,6 +369,8 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         throw new Error('练习快照与索引版本不一致。原有数据没有被覆盖。')
       }
       let restored: PracticeSnapshot
+      const chunkFingerprints = new Map<number, string>()
+      let canCheckpoint = true
       if ('schemaVersion' in raw && raw.schemaVersion === 4) {
         const source = 'sourceState' in raw && typeof raw.sourceState === 'object' && raw.sourceState !== null && 'datasetId' in raw.sourceState ? raw.sourceState : null
         if (!source || typeof source.datasetId !== 'string') throw new Error('历史练习的数据集引用损坏。原有数据没有被覆盖。')
@@ -346,7 +399,11 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
           const expectedLength = Math.min(SESSION_FRAME_WINDOW_SIZE, frameCount - chunkIndex * SESSION_FRAME_WINDOW_SIZE)
           const chunk = parseChunk(await readStored(database, 'historyChunks', [loaded.pointer.id, chunkIndex]), loaded.pointer.id, chunkIndex, expectedLength)
-          for (const frame of chunk.frames) validator.pushFrame(frame)
+          await validateArchiveFrames(validator, chunk.frames)
+          if (canCheckpoint) {
+            try { chunkFingerprints.set(chunkIndex, await fingerprintRecord(chunk)) }
+            catch { canCheckpoint = false; chunkFingerprints.clear() }
+          }
         }
         restored = validator.finish()
       }
@@ -356,6 +413,12 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       baseline = loaded.pointer
       baselineState = finalState
       verifiedHead = copyPracticeSnapshot(restored)
+      if (canCheckpoint && restored.schemaVersion === 3 && pendingMigrationFrames === null) {
+        try {
+          const checkpoint = await createArchiveCheckpoint(raw, restored, chunkFingerprints, finalState)
+          if (scope === archiveScope) archiveCheckpoint = checkpoint
+        } catch { if (scope === archiveScope) invalidateArchiveCheckpoint() }
+      }
       return copyPracticeSnapshot(restored)
     } catch (error) {
       pendingMigrationFrames = null
@@ -430,6 +493,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     baselineState = committedState
     verifiedHead = copyPracticeSnapshot(validated)
     pendingMigrationFrames = null
+    invalidateArchiveCheckpoint()
   }
 
   async function saveSimulation(snapshot: SessionSnapshot, annotation?: PendingTradeAnnotation, trainingContextInput?: TrainingContextInput): Promise<void> {
@@ -439,6 +503,14 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     const trainingContext = trainingContextInput ? createSessionTrainingContext(snapshot.id, trainingContextInput) : undefined
     if (prior && isHistoricalSnapshot(prior)) throw new Error('练习模式不可原地改变。原有数据没有被覆盖。')
     const previous = prior
+    let inheritedCheckpoint = archiveCheckpoint
+    if (previous && inheritedCheckpoint) {
+      try {
+        if (inheritedCheckpoint.sessionId !== previous.id || inheritedCheckpoint.revision !== previous.revision
+          || inheritedCheckpoint.epoch !== baselineState?.epoch || inheritedCheckpoint.generation !== baselineState?.generation
+          || inheritedCheckpoint.verifiedHeadFingerprint !== await fingerprintRecord(previous)) inheritedCheckpoint = null
+      } catch { inheritedCheckpoint = null }
+    } else inheritedCheckpoint = null
     const validated = previous ? validateSessionTransition(previous, snapshot) : validateSessionSnapshot(snapshot)
     if (previous && validated.revision === previous.revision && JSON.stringify(validated) !== JSON.stringify(previous)) {
       throw new Error('练习状态发生改变但保存版本未推进。原有数据没有被覆盖。')
@@ -448,6 +520,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     const appendFrames = migration
       ? [...pendingMigrationFrames!, ...validated.frames.slice(previous!.sourceState.frameIndex + 1 - validated.frameStartIndex)]
       : previous ? validated.frames.slice(appendStart - validated.frameStartIndex) : validated.frames
+    const writtenChunks: HistoryChunk[] = []
     const committedState = await writeTransaction(['sessions', 'historyChunks', 'sessionSummaries', 'annotations'], (transaction, abort) => {
       function writeHead(): void {
         transaction.objectStore('sessions').put(validated)
@@ -460,12 +533,18 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         for (const frame of appendFrames) {
           frames.push(frame)
           if (frames.length === SESSION_FRAME_WINDOW_SIZE) {
-            transaction.objectStore('historyChunks').put({ sessionId: validated.id, chunkIndex, frames })
+            const chunk = { sessionId: validated.id, chunkIndex, frames }
+            transaction.objectStore('historyChunks').put(chunk)
+            writtenChunks.push(chunk)
             chunkIndex += 1
             frames = []
           }
         }
-        if (frames.length > 0) transaction.objectStore('historyChunks').put({ sessionId: validated.id, chunkIndex, frames })
+        if (frames.length > 0) {
+          const chunk = { sessionId: validated.id, chunkIndex, frames }
+          transaction.objectStore('historyChunks').put(chunk)
+          writtenChunks.push(chunk)
+        }
         writeHead()
       }
       function appendHistory(): void {
@@ -513,6 +592,21 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     baselineState = committedState
     verifiedHead = copySessionSnapshot(validated)
     pendingMigrationFrames = null
+    invalidateArchiveCheckpoint()
+    const scope = archiveScope
+    // The transaction is already complete. Optional cache maintenance must not
+    // turn a committed trade into a reported save failure.
+    if (!migration && (!previous || inheritedCheckpoint)) {
+      try {
+        const fingerprints = new Map(inheritedCheckpoint?.chunkFingerprints)
+        for (const chunk of writtenChunks) fingerprints.set(chunk.chunkIndex, await fingerprintRecord(chunk))
+        if (fingerprints.size === Math.ceil((validated.sourceState.frameIndex + 1) / SESSION_FRAME_WINDOW_SIZE)) {
+          const checkpoint = await createArchiveCheckpoint(validated, validated, fingerprints, committedState)
+          if (previous && validated.revision === previous.revision && inheritedCheckpoint) checkpoint.headFingerprint = inheritedCheckpoint.headFingerprint
+          if (scope === archiveScope) archiveCheckpoint = checkpoint
+        }
+      } catch { /* Keep the committed state; the next range read fully validates. */ }
+    }
   }
 
   async function loadCurrentWithSource(): Promise<LoadedSession | null> {
@@ -520,7 +614,8 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     return snapshot ? { snapshot, dataset: snapshot.schemaVersion === 4 ? verifiedDataset : null } : null
   }
 
-  async function loadSessionInternal(id: string): Promise<{ loaded: LoadedSession; migrationFrames: MarketFrame[] | null; state: LibraryState; chunks: HistoryChunk[] } | null> {
+  async function loadSessionInternal(id: string): Promise<{ loaded: LoadedSession; migrationFrames: MarketFrame[] | null; state: LibraryState; chunks: HistoryChunk[]; checkpoint: ArchiveCheckpoint | null } | null> {
+    const scope = archiveScope
     const initialState = await currentState()
     const database = await openDatabase()
     const raw = await readStored(database, 'sessions', id)
@@ -531,6 +626,8 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       let dataset: HistoryDataset | null = null
       let migrationFrames: MarketFrame[] | null = null
       let chunks: HistoryChunk[] = []
+      const chunkFingerprints = new Map<number, string>()
+      let canCheckpoint = true
       if (raw.schemaVersion === 4) {
         const source = 'sourceState' in raw && raw.sourceState && typeof raw.sourceState === 'object' && 'datasetId' in raw.sourceState ? raw.sourceState : null
         if (!source || typeof source.datasetId !== 'string') throw new Error('历史数据集引用损坏。')
@@ -548,19 +645,35 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
         if (chunks.length !== Math.ceil(count / SESSION_FRAME_WINDOW_SIZE)) throw new Error('归档行情块数量不一致。')
         for (let index = 0; index < chunks.length; index += 1) {
           const chunk = parseChunk(chunks[index], id, index, Math.min(SESSION_FRAME_WINDOW_SIZE, count - index * SESSION_FRAME_WINDOW_SIZE))
-          for (const frame of chunk.frames) validator.pushFrame(frame)
+          await validateArchiveFrames(validator, chunk.frames)
+          if (canCheckpoint) {
+            try { chunkFingerprints.set(index, await fingerprintRecord(chunk)) }
+            catch { canCheckpoint = false; chunkFingerprints.clear() }
+          }
         }
         snapshot = validator.finish()
       }
       const finalState = await currentState()
       if (!sameState(initialState, finalState)) throw new Error('另一窗口在读取期间更新了数据库，请重试读取。')
-      return { loaded: { snapshot: copyPracticeSnapshot(snapshot), dataset }, migrationFrames, state: finalState, chunks }
+      let checkpoint: ArchiveCheckpoint | null = null
+      if (canCheckpoint && snapshot.schemaVersion === 3 && migrationFrames === null) {
+        try {
+          checkpoint = await createArchiveCheckpoint(raw, snapshot, chunkFingerprints, finalState)
+          const pointer = parsePointer(await readStored(database, 'settings', 'current'))
+          const verifiedFingerprint = verifiedHead ? await fingerprintRecord(verifiedHead) : null
+          if (scope === archiveScope && verifiedHead && samePointer(pointer, { id, revision: snapshot.revision })
+            && samePointer(baseline ?? null, pointer) && baselineState?.epoch === finalState.epoch && baselineState.generation === finalState.generation
+            && checkpoint.verifiedHeadFingerprint === verifiedFingerprint) archiveCheckpoint = checkpoint
+        } catch { checkpoint = null }
+      }
+      return { loaded: { snapshot: copyPracticeSnapshot(snapshot), dataset }, migrationFrames, state: finalState, chunks, checkpoint }
     } catch (error) { throw new SessionLoadError(error instanceof Error ? error.message : '读取练习失败。', raw) }
   }
   async function loadSession(id: string): Promise<LoadedSession | null> { return (await loadSessionInternal(id))?.loaded ?? null }
 
   async function activateSession(id: string): Promise<LoadedSession> {
     if (baseline === undefined || !baselineState) throw new Error('请先读取当前练习。')
+    invalidateArchiveCheckpoint()
     const target = await loadSessionInternal(id)
     if (!target) throw new Error('选择的练习不存在。')
     const snapshot = target.loaded.snapshot
@@ -583,6 +696,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     verifiedHead = copyPracticeSnapshot(snapshot)
     verifiedDataset = target.loaded.dataset
     pendingMigrationFrames = target.migrationFrames
+    if (target.checkpoint) archiveCheckpoint = { ...target.checkpoint, epoch: state.epoch, generation: state.generation }
     return { snapshot: copyPracticeSnapshot(snapshot), dataset: target.loaded.dataset }
   }
 
@@ -621,10 +735,60 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     return result!
   }
 
+  async function readCheckpointFrames(sessionId: string, range: { fromTimestampMs?: number; toTimestampMs?: number }): Promise<MarketFrame[] | null> {
+    const checkpoint = archiveCheckpoint
+    if (!checkpoint || checkpoint.sessionId !== sessionId) return null
+    const scope = archiveScope
+    const expire = (): null => { if (archiveCheckpoint === checkpoint) invalidateArchiveCheckpoint(); return null }
+    try {
+      const database = await openDatabase()
+      // Still read every archived block. Unrequested older/later corruption must
+      // not disappear merely because a chart asks for a small visible range.
+      const captured = await new Promise<{ raw: unknown; chunks: HistoryChunk[]; state: LibraryState; pointer: CurrentPointer | null }>((resolve, reject) => {
+        const transaction = database.transaction(['sessions', 'historyChunks', 'settings'], 'readonly')
+        let raw: unknown
+        let chunks: HistoryChunk[] = []
+        let state: LibraryState
+        let pointer: CurrentPointer | null = null
+        let failure: unknown = null
+        const head = transaction.objectStore('sessions').get(sessionId)
+        head.onsuccess = () => { raw = head.result as unknown }
+        const archive = transaction.objectStore('historyChunks').getAll(IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]))
+        archive.onsuccess = () => { chunks = archive.result as HistoryChunk[] }
+        const library = transaction.objectStore('settings').get('library')
+        library.onsuccess = () => { try { state = readLibraryState(library.result as unknown) } catch (error) { failure = error; transaction.abort() } }
+        const current = transaction.objectStore('settings').get('current')
+        current.onsuccess = () => { try { pointer = parsePointer(current.result as unknown) } catch (error) { failure = error; transaction.abort() } }
+        transaction.oncomplete = () => resolve({ raw, chunks, state, pointer })
+        transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取归档失败。'))
+      })
+      const pointer = { id: checkpoint.sessionId, revision: checkpoint.revision }
+      const expectedCount = Math.ceil(checkpoint.frameCount / SESSION_FRAME_WINDOW_SIZE)
+      if (captured.state.epoch !== checkpoint.epoch || captured.state.generation !== checkpoint.generation
+        || !samePointer(captured.pointer, pointer) || checkpoint.chunkFingerprints.size !== expectedCount || captured.chunks.length !== expectedCount
+        || await fingerprintRecord(captured.raw) !== checkpoint.headFingerprint) return expire()
+      const frames: MarketFrame[] = []
+      for (let index = 0; index < captured.chunks.length; index += 1) {
+        const chunk = parseChunk(captured.chunks[index], sessionId, index, Math.min(SESSION_FRAME_WINDOW_SIZE, checkpoint.frameCount - index * SESSION_FRAME_WINDOW_SIZE))
+        if (await fingerprintRecord(chunk) !== checkpoint.chunkFingerprints.get(index)) return expire()
+        for (const frame of chunk.frames) {
+          const timestampMs = frame.quote.timestampMs
+          if (timestampMs <= checkpoint.currentTimestampMs && (range.fromTimestampMs === undefined || timestampMs >= range.fromTimestampMs)
+            && (range.toTimestampMs === undefined || timestampMs <= range.toTimestampMs)) frames.push(frame)
+        }
+      }
+      const finalFence = await readCurrentFence(database)
+      if (scope !== archiveScope || !sameState(captured.state, finalFence.state) || !samePointer(captured.pointer, finalFence.pointer)) return expire()
+      return structuredClone(frames)
+    } catch { return expire() }
+  }
+
   async function readSessionFrames(sessionId: string, range: { fromTimestampMs?: number; toTimestampMs?: number } = {}): Promise<MarketFrame[]> {
     const { fromTimestampMs, toTimestampMs } = range
     if ([fromTimestampMs, toTimestampMs].some(time => time !== undefined && (!Number.isSafeInteger(time) || time < 0))
       || (fromTimestampMs !== undefined && toTimestampMs !== undefined && fromTimestampMs > toTimestampMs)) throw new Error('观察时间范围无效。')
+    const checkpointFrames = await readCheckpointFrames(sessionId, range)
+    if (checkpointFrames !== null) return checkpointFrames
     const target = await loadSessionInternal(sessionId)
     if (!target) throw new Error('练习不存在。')
     const snapshot = target.loaded.snapshot
@@ -858,6 +1022,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       if (mode === 'empty' && backup.onboardingStatus) transaction.objectStore('settings').put(backup.onboardingStatus, 'onboarding')
     }, { expectedState: state, activate: shouldOpen, signal: options.signal })
     pendingBackups.delete(preview.id)
+    invalidateArchiveCheckpoint()
     verifiedDataset = null
     let loadedSession: LoadedSession | null = null
     if (shouldOpen && restoredCurrentId) {
@@ -889,6 +1054,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       baselineState = null
       pendingBackups.clear()
       backupRequestGeneration += 1
+      invalidateArchiveCheckpoint()
     },
   }
 }
