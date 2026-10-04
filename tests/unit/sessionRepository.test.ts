@@ -8,6 +8,7 @@ import type { MarketFrame } from '../../src/engine/types'
 import { closePosition, openPosition } from '../../src/engine/execution'
 import { advanceSimulation } from '../../src/engine/simulationSource'
 import * as simulationSource from '../../src/engine/simulationSource'
+import * as snapshots from '../../src/storage/sessionSnapshot'
 import { extendSession, makeLegacySession, makeSession } from './sessionFixture'
 
 const repositories: SessionRepository[] = []
@@ -472,4 +473,152 @@ describe('IndexedDB session repository', () => {
     }
     expect(await created.loadCurrent()).toEqual(next)
   }, 15_000)
+})
+
+async function createCheckpointPractice(count = 3001) {
+  const name = `fx-checkpoint-${crypto.randomUUID()}`
+  const seed = repository(name)
+  await seed.loadCurrent()
+  let snapshot = makeSession('EUR/USD', null)
+  await seed.save(snapshot)
+  for (let remaining = count - 1; remaining > 0; remaining -= SESSION_FRAME_WINDOW_SIZE) {
+    snapshot = extendSession(snapshot, Math.min(SESSION_FRAME_WINDOW_SIZE, remaining))
+    await seed.save(snapshot)
+  }
+  seed.close()
+  const reader = repository(name)
+  expect(await reader.loadCurrent()).toEqual(snapshot)
+  return { name, reader, snapshot }
+}
+
+describe('private validated archive checkpoints', () => {
+  it('avoids full replay for repeated range reads before and after a validated append or unchanged save', async () => {
+    const { reader, snapshot } = await createCheckpointPractice()
+    const replay = vi.spyOn(snapshots, 'createSessionHistoryValidator')
+    const range = { fromTimestampMs: snapshot.frames.at(-3)!.quote.timestampMs, toTimestampMs: snapshot.sourceState.currentTimestampMs }
+    const expected = snapshot.frames.slice(-3)
+    expect(await reader.readSessionFrames(snapshot.id, range)).toEqual(expected)
+    const detached = await reader.readSessionFrames(snapshot.id, range)
+    detached[0]!.highPrice = '123'
+    expect(await reader.readSessionFrames(snapshot.id, range)).toEqual(expected)
+    expect(replay).not.toHaveBeenCalled()
+    await reader.save(snapshot)
+    expect(await reader.readSessionFrames(snapshot.id, range)).toEqual(expected)
+    expect(replay).not.toHaveBeenCalled()
+    const next = extendSession(snapshot)
+    await reader.save(next)
+    expect(await reader.readSessionFrames(next.id, { fromTimestampMs: next.sourceState.currentTimestampMs })).toEqual([next.frames.at(-1)!])
+    expect(replay).not.toHaveBeenCalled()
+    expect(await reader.readSessionFrames(next.id, { fromTimestampMs: next.sourceState.currentTimestampMs + 60_000 })).toEqual([])
+  }, 30_000)
+
+  it.each(['earlier', 'later', 'missing', 'head'] as const)('rejects %s corruption outside the requested window without returning a cached range', async kind => {
+    const { name, reader, snapshot } = await createCheckpointPractice()
+    const range = kind === 'later' ? { toTimestampMs: snapshot.frames[0]!.quote.timestampMs } : { fromTimestampMs: snapshot.sourceState.currentTimestampMs }
+    if (kind === 'head') {
+      const damaged = structuredClone(await readRecord(name, 'sessions', snapshot.id)) as SessionSnapshot
+      damaged.account.balanceUsd = '9999.00'
+      await changeRecord(name, 'sessions', snapshot.id, damaged)
+    } else if (kind === 'missing') await changeRecord(name, 'historyChunks', [snapshot.id, 0], undefined)
+    else {
+      const chunkIndex = kind === 'earlier' ? 0 : 2
+      const damaged = structuredClone(await readRecord(name, 'historyChunks', [snapshot.id, chunkIndex])) as { sessionId: string; chunkIndex: number; frames: MarketFrame[] }
+      damaged.frames[0]!.highPrice = '2'
+      await changeRecord(name, 'historyChunks', [snapshot.id, chunkIndex], damaged)
+    }
+    await expect(reader.readSessionFrames(snapshot.id, range)).rejects.toThrow()
+  }, 30_000)
+
+  it('never certifies an altered partial block while appending one valid new minute', async () => {
+    const { name, reader, snapshot } = await createCheckpointPractice()
+    const damaged = structuredClone(await readRecord(name, 'historyChunks', [snapshot.id, 2])) as { sessionId: string; chunkIndex: number; frames: MarketFrame[] }
+    damaged.frames[0]!.highPrice = '2'
+    await changeRecord(name, 'historyChunks', [snapshot.id, 2], damaged)
+    await expect(reader.save(extendSession(snapshot))).rejects.toThrow('最后归档块与已验证练习不一致')
+    expect(await readRecord(name, 'sessions', snapshot.id)).toEqual(snapshot)
+    await expect(reader.readSessionFrames(snapshot.id, { fromTimestampMs: snapshot.sourceState.currentTimestampMs })).rejects.toThrow()
+  }, 30_000)
+
+  it('does not certify unmodified older database blocks after an append to the current block', async () => {
+    const { name, reader, snapshot } = await createCheckpointPractice()
+    const damaged = structuredClone(await readRecord(name, 'historyChunks', [snapshot.id, 0])) as { sessionId: string; chunkIndex: number; frames: MarketFrame[] }
+    damaged.frames[0]!.highPrice = '2'
+    await changeRecord(name, 'historyChunks', [snapshot.id, 0], damaged)
+    const next = extendSession(snapshot)
+    await reader.save(next)
+    expect(await readRecord(name, 'historyChunks', [snapshot.id, 0])).toEqual(damaged)
+    await expect(reader.readSessionFrames(next.id, { fromTimestampMs: next.sourceState.currentTimestampMs })).rejects.toThrow()
+  }, 30_000)
+
+  it('invalidates a stale owner on A-B-A activation and a cross-window progress update', async () => {
+    const { name, reader, snapshot } = await createCheckpointPractice(1701)
+    const other = repository(name)
+    await other.loadCurrent()
+    const b = { ...makeSession('GBP/USD'), id: 'another-practice' }
+    await other.save(b)
+    await other.activateSession(snapshot.id)
+    const replay = vi.spyOn(snapshots, 'createSessionHistoryValidator')
+    expect(await reader.readSessionFrames(snapshot.id, { fromTimestampMs: snapshot.sourceState.currentTimestampMs })).toEqual([snapshot.frames.at(-1)!])
+    expect(replay).toHaveBeenCalled()
+    replay.mockClear()
+    const next = extendSession(snapshot)
+    await other.save(next)
+    expect(await reader.readSessionFrames(next.id, { fromTimestampMs: next.sourceState.currentTimestampMs })).toEqual([next.frames.at(-1)!])
+    expect(replay).toHaveBeenCalled()
+    await expect(reader.save(extendSession(snapshot))).rejects.toThrow('另一窗口')
+  }, 30_000)
+
+  it('keeps a successful save and cold read usable when optional fingerprinting fails', async () => {
+    const { name, reader, snapshot } = await createCheckpointPractice(1701)
+    vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(new Error('optional cache unavailable'))
+    const next = extendSession(snapshot)
+    await expect(reader.save(next)).resolves.toBeUndefined()
+    expect(await reader.readSessionFrames(next.id, { fromTimestampMs: next.sourceState.currentTimestampMs })).toEqual([next.frames.at(-1)!])
+    const cold = repository(name)
+    expect(await cold.loadCurrent()).toEqual(next)
+    vi.restoreAllMocks()
+    expect(await cold.readSessionFrames(next.id, { fromTimestampMs: next.sourceState.currentTimestampMs })).toEqual([next.frames.at(-1)!])
+  }, 30_000)
+
+  it('drops the checkpoint when generation changes during hashing even if the change sequence is unchanged', async () => {
+    const { name, reader, snapshot } = await createCheckpointPractice(1701)
+    const replay = vi.spyOn(snapshots, 'createSessionHistoryValidator')
+    const digest = crypto.subtle.digest.bind(crypto.subtle)
+    let changed = false
+    vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, input) => {
+      const result = await digest(algorithm, input)
+      if (!changed) {
+        changed = true
+        const database = await openStoredDatabase(name)
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const transaction = database.transaction('settings', 'readwrite')
+            const request = transaction.objectStore('settings').get('library')
+            request.onsuccess = () => {
+              const state = request.result as { epoch: string; sequence: number; generation: number }
+              transaction.objectStore('settings').put({ ...state, generation: state.generation + 1 }, 'library')
+            }
+            transaction.oncomplete = () => resolve()
+            transaction.onabort = () => reject(transaction.error)
+          })
+        } finally { database.close() }
+      }
+      return result
+    })
+    expect(await reader.readSessionFrames(snapshot.id, { fromTimestampMs: snapshot.sourceState.currentTimestampMs })).toEqual([snapshot.frames.at(-1)!])
+    expect(replay).toHaveBeenCalled()
+    await expect(reader.save(extendSession(snapshot))).rejects.toThrow('另一窗口')
+  }, 30_000)
+
+  it('retains the legacy inline history before and after atomic migration into archived blocks', async () => {
+    const name = `fx-checkpoint-legacy-${crypto.randomUUID()}`
+    const legacy = makeLegacySession()
+    await seedLegacySnapshot(name, legacy)
+    const created = repository(name)
+    const migrated = (await created.loadCurrent()) as SessionSnapshot
+    expect(await created.readSessionFrames(legacy.id)).toEqual(legacy.frames)
+    await created.save(migrated)
+    expect(await created.readSessionFrames(legacy.id)).toEqual(legacy.frames)
+    expect((await created.loadCurrent())?.account).toEqual(legacy.account)
+  })
 })
