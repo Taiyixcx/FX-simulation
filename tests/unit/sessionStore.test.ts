@@ -46,6 +46,8 @@ function memoryRepository(initial: unknown | null = null) {
     listSessions: vi.fn(async () => []),
     listDatasetEntries: vi.fn(async () => []),
     exportBackupJson: vi.fn(async () => { throw new Error('本测试不提供完整备份。') }),
+    exportSessionBackupJson: vi.fn(async () => { throw new Error('本测试不提供练习备份。') }),
+    exportRecoveryBackupJson: vi.fn(async () => { throw new Error('本测试不提供故障备份。') }),
     previewBackup: vi.fn(async () => { throw new Error('本测试不提供备份恢复。') }),
     discardBackupPreview: vi.fn(),
     restoreBackup: vi.fn(async () => { throw new Error('本测试不提供备份恢复。') }),

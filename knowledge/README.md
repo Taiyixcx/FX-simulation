@@ -7,7 +7,7 @@
 | 主题 | 内容 | 常见问题入口 |
 | --- | --- | --- |
 | [外汇与历史回放](01-forex-and-replay.md) | 市场结构、报价、盈亏、分钟精度、数据来源与许可 | [上涨为什么仍亏损？](01-forex-and-replay.md#报价与资金)、[OHLC 能还原分钟内走势吗？](01-forex-and-replay.md#历史回放与数据精度)、[免费下载能直接公开吗？](01-forex-and-replay.md#数据来源与使用边界) |
-| [网页工程](02-web-engineering.md) | Vue、ECharts、Decimal、IndexedDB、本地字体、可访问性、Git | [图表实例、更新与许可](02-web-engineering.md#图表与十进制计算)、[如何判断保存完成？](02-web-engineering.md#本地保存与恢复)、[换端口为什么看不到记录？](02-web-engineering.md#运行与状态组织) |
+| [网页工程](02-web-engineering.md) | Vue、ECharts、Decimal、IndexedDB、本地字体、可访问性、Git、便携运行时 | [图表实例、更新与许可](02-web-engineering.md#图表与十进制计算)、[如何判断保存完成？](02-web-engineering.md#本地保存与恢复)、[Windows 运行时来源](02-web-engineering.md#windows-便携运行时) |
 | [同类产品与设计](03-product-references.md) | 原型、TradingView、FX Replay、Forex Tester、Trading Game、Linear | [回放与纸上交易有什么不同？](03-product-references.md#tradingview)、[复盘与教学如何保持简单？](03-product-references.md#fx-replay)、[整页设计如何统一？](03-product-references.md#整页设计参考) |
 | [精致工作台与交互设计](04-interface-design.md) | 19 个官方页面，覆盖产品构图、数字层级、控件、动效与响应式 | [产品设计参考](04-interface-design.md#产品页面与设计复盘)、[交互规范与限制](04-interface-design.md#控件动效与可访问性规范)、[对应整体方案](../overview/05-interface-redesign.md) |
 | [外汇模拟研究](05-foreign-exchange-simulation.md) | 收益不确定性、持续波动、事件、时段及校准限制 | [方向与波动](05-foreign-exchange-simulation.md#收益方向与波动的可预测性)、[公告与突发事件](05-foreign-exchange-simulation.md#公告与突发事件)、[统计与授权边界](05-foreign-exchange-simulation.md#校准时区与数据) |
@@ -26,6 +26,8 @@
 ## 如何使用资料
 
 初始资料核对日期为 **2026-09-30**；**2026-10-01** 更新了图表选型、字体、测试依赖及整页设计参考；**2026-10-02** 增加外汇模拟研究；**2026-10-03** 增加八个产品及保存、执行、训练的补充研究。条目注明机构、类型、结论、限制和对应设计；后续只更新受影响条目，并单独记录新的核对日期。
+
+**2026-10-08** 增加 Node.js 官方便携运行时的来源、固定指纹及完整许可保留依据；实际运行证据放在项目分发记录。
 
 资料优先使用监管机构、央行、维护者文档和产品官方帮助页。监管文件按地域和年份理解；产品页反映官方描述，不等于独立评测；设计取舍属于本项目判断。除原型的静态源码读取外，未进行付费竞品的登录、购买或完整交互测试。
 

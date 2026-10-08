@@ -107,6 +107,8 @@ export const useSessionStore = defineStore('session', () => {
   const accountMetrics = computed(() => snapshot.value && currentQuote.value ? calculateAccount(snapshot.value.account, currentQuote.value) : null)
   const isReady = computed(() => loadStatus.value === 'ready' && snapshot.value !== null)
   const canOperate = computed(() => isReady.value && !isBusy.value && !isLibraryBusy.value && saveStatus.value === 'saved' && !isDisposed.value)
+  const canCleanStorage = computed(() => isReady.value && !isBusy.value && !isLibraryBusy.value
+    && (saveStatus.value === 'saved' || saveStatus.value === 'error') && !isDisposed.value)
   const isCalendarEnded = computed(() => snapshot.value?.schemaVersion === 3 && nextSimulationTimestamp(snapshot.value.sourceState.currentTimestampMs) > MAX_SIMULATION_TIMESTAMP_MS)
   const isEnded = computed(() => isCalendarEnded.value || (snapshot.value !== null && snapshot.value.sourceState.maxFrames !== null && snapshot.value.sourceState.frameIndex >= snapshot.value.sourceState.maxFrames - 1))
   const historyStartIndex = computed(() => snapshot.value?.schemaVersion === 4 ? getHistoryPracticeStart(snapshot.value).startFrameIndex : 0)
@@ -549,6 +551,39 @@ export const useSessionStore = defineStore('session', () => {
     } finally { isLibraryBusy.value = false }
   }
 
+  async function exportRecoveryBackupJson(signal?: AbortSignal): Promise<string | null> {
+    if (!snapshot.value || saveStatus.value !== 'error' || isBusy.value || isLibraryBusy.value || isDisposed.value) return null
+    pause()
+    isLibraryBusy.value = true
+    libraryErrorMessage.value = ''
+    libraryMessage.value = ''
+    try {
+      const json = await repository.exportRecoveryBackupJson({ snapshot: snapshot.value, dataset: activeHistoryDataset,
+        annotation: pendingAnnotation, trainingContext: pendingTrainingContext }, signal)
+      libraryMessage.value = '已生成当前未保存练习的故障备份，包含持仓、行情和待保存计划。可用完整备份恢复入口恢复为独立副本。'
+      return json
+    } catch (error) {
+      libraryErrorMessage.value = `故障备份未完成：${errorText(error)} 当前窗口的未保存状态保留，可导出原始快照留存。`
+      return null
+    } finally { isLibraryBusy.value = false }
+  }
+
+  async function exportSavedSessionBackupJson(id: string, signal?: AbortSignal): Promise<string | null> {
+    if (isBusy.value || isLibraryBusy.value || isDisposed.value) return null
+    pause()
+    isLibraryBusy.value = true
+    libraryErrorMessage.value = ''
+    libraryMessage.value = ''
+    try {
+      const json = await repository.exportSessionBackupJson(id, signal)
+      libraryMessage.value = '已生成所选练习的备份，包含该练习及所需行情和备注；其他练习请分别备份或导出完整备份。'
+      return json
+    } catch (error) {
+      libraryErrorMessage.value = `练习备份未完成：${errorText(error)} 原数据保留。`
+      return null
+    } finally { isLibraryBusy.value = false }
+  }
+
   async function prepareBackupRestore(json: string, signal?: AbortSignal): Promise<boolean> {
     if (isBusy.value || isLibraryBusy.value || isDisposed.value) return false
     pause()
@@ -599,14 +634,15 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function deleteSavedSession(id: string, expectedRevision: number): Promise<boolean> {
-    if (!canOperate.value || id === snapshot.value?.id) return false
+    if (!canCleanStorage.value || !snapshot.value || id === snapshot.value.id) return false
     pause()
     isBusy.value = true
     libraryErrorMessage.value = ''
     try {
-      await repository.deleteSession(id, expectedRevision)
+      await repository.deleteSession(id, expectedRevision, { sessionId: snapshot.value.id,
+        datasetId: snapshot.value.schemaVersion === 4 ? snapshot.value.sourceState.datasetId : null })
       await refreshLibrary()
-      libraryMessage.value = '已删除所选旧练习及其记录，其他练习保留。'
+      libraryMessage.value = `已删除所选旧练习及其记录，其他练习保留。${saveStatus.value === 'error' ? '当前未保存状态和计划仍在窗口中，请重试保存。' : ''}`
       return true
     } catch (error) {
       libraryErrorMessage.value = `删除未完成：${errorText(error)}`
@@ -615,15 +651,16 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function deleteHistoryDataset(id: string): Promise<boolean> {
-    if (!canOperate.value) return false
+    if (!canCleanStorage.value || !snapshot.value) return false
     pause()
     isBusy.value = true
     libraryErrorMessage.value = ''
     try {
-      await repository.deleteDataset(id)
+      await repository.deleteDataset(id, { sessionId: snapshot.value.id,
+        datasetId: snapshot.value.schemaVersion === 4 ? snapshot.value.sourceState.datasetId : null })
       await refreshHistoryDatasets()
       await refreshStorageHealth()
-      libraryMessage.value = '已删除所选未使用数据集。'
+      libraryMessage.value = `已删除所选未使用数据集。${saveStatus.value === 'error' ? '当前未保存状态和计划仍在窗口中，请重试保存。' : ''}`
       return true
     } catch (error) {
       libraryErrorMessage.value = `删除未完成：${errorText(error)}`
@@ -754,11 +791,11 @@ export const useSessionStore = defineStore('session', () => {
     progressedFrameCount, totalPracticeFrameCount, historyStartIndex, accountMetrics, isPlaying, speed, isBusy, isReady, canOperate,
     savedSessions, datasetEntries, tradeAnnotations, sessionObservations, trainingContext, comparisonContext, libraryErrorMessage, libraryMessage, storageHealth, onboardingStatus, backupPreview, isLibraryBusy,
     practiceStatistics, isStatisticsLoading, statisticsError, reviewFrames, reviewTrade, reviewTimestampMs, isReviewLoading, reviewError, isReviewing, chartFrames,
-    isEnded, isCalendarEnded, canAdvance, saveStatus, loadStatus, errorMessage, rawRecoveryJson,
+    isEnded, isCalendarEnded, canAdvance, canCleanStorage, saveStatus, loadStatus, errorMessage, rawRecoveryJson,
     initialize, setSpeed, next, play, pause, openTrade, closeTrade, switchPair,
     startNewSession, startHistorySession, importHistoryDataset, refreshHistoryDatasets,
     activateSavedSession, refreshLibrary, refreshCurrentMetadata, saveTradeAnnotation, recordObservation, setOnboardingStatus,
-    selectReviewTrade, exitReview, loadPracticeStatistics, exportBackupJson, prepareBackupRestore, cancelBackupRestore, restoreBackup,
+    selectReviewTrade, exitReview, loadPracticeStatistics, exportBackupJson, exportRecoveryBackupJson, exportSavedSessionBackupJson, prepareBackupRestore, cancelBackupRestore, restoreBackup,
     deleteSavedSession, deleteHistoryDataset, refreshStorageHealth, requestPersistentStorage,
     repeatCurrentPractice, startUnseenHistoryPractice,
     retrySave, retryLoad, exportSnapshotJson, dispose, setRepositoryForTesting,

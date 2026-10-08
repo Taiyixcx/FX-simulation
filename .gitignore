@@ -1,6 +1,7 @@
 # Dependencies, build output and verification artifacts
 node_modules/
 dist/
+release/
 .vite/
 coverage/
 test-results/

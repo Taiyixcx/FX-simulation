@@ -9,14 +9,14 @@
 | 能力 | 当前依赖 | 用途 |
 | --- | --- | --- |
 | 界面 | Vue 3.5.43、TypeScript 6.0.3、vue-tsc 3.3.11 | Composition API、单文件组件与严格类型检查 |
-| 构建与服务 | Vite 8.3.1、Vue 插件 6.0.9、npm | 本机开发、静态打包与固定地址预览 |
+| 构建与服务 | Vite 8.3.1、Vue 插件 6.0.9、npm；Node 原生 HTTP | 本机开发及静态打包；正式启动不依赖 Vite，Windows 便携包提供固定运行时 |
 | 状态协调 | Pinia 4.0.3 | 单个会话 Store 统一协调进度、账户和保存 |
 | 图表 | Apache ECharts 6.1.0 | 按需引入折线、K 线、十字线、缩放、平移和实际成交标记 |
 | 字体 | @fontsource/inter 5.3.0 | 本地打包英文及数字的 Inter 400/500/600/700 字重；中文使用系统字体 |
 | 计算 | Decimal.js 10.6.0 | 报价、数量、资金与盈亏的十进制运算 |
 | 保存 | 浏览器原生 IndexedDB | 行情归档、历史数据集、会话快照与当前索引的事务保存 |
 | 单元验证 | Vitest 5.0.3、fake-indexeddb 6.2.5 | 引擎、图表适配、快照、事务和 Store |
-| 流程验证 | Playwright 1.63.0 | Chromium 内的工作台操作和刷新恢复 |
+| 流程验证 | Playwright 1.63.0 | Chromium 与可选真实 Edge；实际 ZIP 解压后的运行与备份恢复 |
 
 使用原生语义控件、CSS 变量和组件 scoped 样式。未引入组件库、Router、SSR、后端或 PWA。TypeScript 使用与当前 vue-tsc 实际验证可用的 6.0.3；是否升级需按项目兼容性判断，不默认切换其他编译器版本。
 
@@ -97,7 +97,11 @@ FX-simulation/
 │  ├─ calibrateSimulation.mjs  # 跨月估计与时间留出
 │  ├─ convertHistData.mjs      # 本机 HistData 文件转换及来源记录
 │  ├─ runTests.mjs             # 项目内测试临时目录
-│  └─ startLocal.mjs           # 固定端口构建版启动
+│  ├─ startLocal.mjs           # 源码构建/便携包的固定地址启动
+│  ├─ localServer.mjs          # 无依赖只读本机 HTTP 服务
+│  ├─ packageWindows.mjs       # 允许文件范围、官方运行时及实际 ZIP 核验
+│  └─ runReleaseBrowserTests.mjs # 当前版本 ZIP 的隔离浏览器验收
+├─ release/                   # 忽略的 Windows 便携目录、ZIP 和指纹
 ├─ start.cmd                  # Windows 双击入口
 ├─ index.html
 ├─ package.json
@@ -178,7 +182,8 @@ Vue 操作 ───────► useSessionStore
 | `HistoricalSessionSnapshot`、`PracticeSnapshot` | 历史格式版本 4，模式为 `historical`，保存历史进度引用、已推进窗口、账户和完整成交；联合类型保留原模拟快照接口 |
 | 快照与历史校验 | 旧格式校验已有行情与账本后内存迁移；加载分块验证完整历史；保存以可信基准验证增量，拒绝陈旧或篡改数据 |
 | `SessionRepository` | `loadCurrentWithSource`、`loadSession`、`activateSession`、`listSessions`、`listDatasetEntries`；恢复返回同份已验证源；`save` 可同事务提交首次计划及训练上下文 |
-| 备份与元数据接口 | `exportBackupJson`、`previewBackup`、`discardBackupPreview`、`restoreBackup`；独立注释 CAS、观察、训练上下文、存储健康和明确删除；完整签名见源接口 |
+| 备份与元数据接口 | `exportBackupJson` 导出一致整库；`exportSessionBackupJson` 单事务捕获一场；`exportRecoveryBackupJson(RecoveryBackupInput)` 叠加未保存候选及计划；共用 `previewBackup`、`discardBackupPreview`、`restoreBackup`；完整签名见源接口 |
+| 受保护清理 | `deleteSession`、`deleteDataset` 可携带 `CleanupProtection`，事务核对持久当前基准及未保存候选/源；Store 的 `canCleanStorage` 在保存失败时允许明确清理，交易仍由 `canOperate` 禁止 |
 | 统计与复盘接口 | `readSessionFrames(id, range?)` 限当前已推进范围；Store 的复盘游标独立于交易进度，统计分批取消及结果失效令牌阻止旧异步结果覆盖新会话 |
 
 Store 按 `PracticeSnapshot` 的格式版本选择模拟或历史纯函数；两种来源共用 `MarketFrame`、成交与账户计算，不增加尚无维护收益的泛化 `MarketSource` 包装层。完整历史数据集由 Store 的私有普通变量持有，响应式快照与页面只得到已推进窗口和元信息；图表不会得到数据集中的未来行情。
@@ -217,7 +222,11 @@ Store 按 `PracticeSnapshot` 的格式版本选择模拟或历史纯函数；两
 
 ## 运行与验证配置
 
-已提供 `dev`、`typecheck`、`test`、`test:e2e`、`check:simulation`、`check:continuous`、`check:history`、`check:calibration`、`convert:histdata`、`build`、`start`。服务严格绑定 `127.0.0.1:4173`；`start` 调用 `startLocal.mjs`，`start.cmd` 提供双击入口，缺依赖/构建/端口占用时明确失败。脚本只创建自己拥有的服务并清理。
+已提供 `dev`、`typecheck`、`test`、`test:e2e`、`test:release`、`test:e2e:release`、`check:simulation`、`check:continuous`、`check:history`、`check:calibration`、`convert:histdata`、`build`、`start`、`package:windows`、`check:release`。服务严格绑定 `127.0.0.1:4173`；`startLocal.mjs` 通过 Node 原生 HTTP 读取源码的 `dist/` 或便携包的 `app/`，只提供 GET/HEAD，不回退未知页面。检查路径解码、真实文件边界及 Host，拒绝目录列举和外部目录；不缓存升级前资源。`start.cmd` 提供源码入口，便携包的 `启动.cmd` 调用包内运行时；缺构建/端口占用时明确失败。脚本只创建自己拥有的服务并清理。
+
+`packageWindows.mjs` 固定官方 Windows x64 Node.js 24.21.0；归档、可执行文件和完整许可按官方发行核对。发行只复制允许的构建资源，写入空样本清单，不复制私用价格、开发工具或个人备份；未知文件与符号链接拒绝。`release/` 的目录、实际 ZIP 解压内容及 SHA-256 逐一核验，重复打包只替换核验通过的既有生成产物。版本来自唯一 `package.json`。运行无需 npm；首次官方运行时取得属于开发打包联网，不属于应用运行联网。
+
+`test:e2e:release` 从实际 ZIP 解压到中文及空格目录，只调用包内 Node 并限制 PATH。`FX_E2E_EDGE=1` 增加已安装的真实 Edge 项目；不据此宣称其他内核或全部操作系统已验证。存储清理、故障候选与逐练习备份的接口及实际验证见 [分发记录](08-distribution-and-verification.md)。
 
 `check:simulation` 调用当前纯模拟源，比较多个固定种子、品种和情景的内部统计及阶段方向规律，不下载行情。`check:calibration` 用本机合法月份估计普通波动/点差并作时间留出；冻结参数与未校准机制分开，不宣称整体真实或完全不可预测。Node SSR 工具关闭 watch/WebSocket，不占用无用热更新端口。
 
