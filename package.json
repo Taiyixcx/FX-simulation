@@ -1,6 +1,6 @@
 {
   "name": "fx-simulation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -17,6 +17,10 @@
     "check:calibration": "node scripts/calibrateSimulation.mjs",
     "convert:histdata": "node scripts/convertHistData.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:release": "node scripts/runReleaseBrowserTests.mjs",
+    "test:release": "node --test tests/unit/localServer.test.mjs tests/unit/packageWindows.test.mjs",
+    "package:windows": "npm run build && node scripts/packageWindows.mjs",
+    "check:release": "node scripts/packageWindows.mjs --verify",
     "build": "vue-tsc --noEmit && vite build"
   },
   "dependencies": {
