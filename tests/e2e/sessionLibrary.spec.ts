@@ -64,6 +64,72 @@ test('旧持仓可以从列表暂停恢复，完整备份在新浏览器追加�
   } finally { await context.close() }
 })
 
+test('配额失败保留计划，可恢复故障备份在新浏览器恢复，清理旧练习后精确重试', async ({ page, browser }) => {
+  await page.goto('/')
+  await waitSaved(page)
+  const old = await readSnapshot<PracticeSnapshot>(page)
+  await page.getByRole('button', { name: '新练习', exact: true }).click()
+  await waitSaved(page)
+  const committed = await readSnapshot<PracticeSnapshot>(page)
+  await page.locator('.trade-learning > summary').click()
+  await page.getByLabel('下单前进场理由（可选）', { exact: true }).fill('配额失败也保留事前计划')
+  await page.getByLabel('计划退出条件（可选）', { exact: true }).fill('观察后手动退出')
+  await page.evaluate(() => {
+    const originalPut = IDBObjectStore.prototype.put
+    Reflect.set(window, '__fxQuotaOriginalPut', originalPut)
+    IDBObjectStore.prototype.put = function (record: unknown, key?: IDBValidKey) {
+      if (this.name === 'sessions') throw new DOMException('隔离浏览器配额失败', 'QuotaExceededError')
+      return originalPut.call(this, record, key)
+    }
+  })
+  await page.getByRole('button', { name: '买涨（做多）', exact: true }).click()
+  await expect(page.getByTestId('save-status')).toHaveText('保存失败')
+  expect(await readSnapshot(page)).toEqual(committed)
+  await openLibrary(page)
+  const downloadEvent = page.waitForEvent('download')
+  await page.locator('.library-content').getByRole('button', { name: '导出可恢复故障备份', exact: true }).click()
+  const pathname = await (await downloadEvent).path()
+  if (!pathname) throw new Error('未取得可恢复故障备份')
+  const json = await readFile(pathname, 'utf8')
+  const backup = JSON.parse(json) as { sessions: PracticeSnapshot[]; annotations: { firstPlan: { entryReason: string; exitPlan: string } }[] }
+  const candidate = backup.sessions[0]!
+  expect(candidate.account.position).not.toBeNull()
+  expect(backup.annotations[0]!.firstPlan).toEqual({ entryReason: '配额失败也保留事前计划', exitPlan: '观察后手动退出' })
+  const context = await browser.newContext()
+  try {
+    const restored = await context.newPage()
+    await restored.goto('/')
+    await waitSaved(restored)
+    await openLibrary(restored)
+    await restored.getByLabel('选择备份文件').setInputFiles({ name: 'recovery-backup.json', mimeType: 'application/json', buffer: Buffer.from(json) })
+    await expect(restored.getByLabel('恢复预览')).toContainText('1 个练习')
+    await restored.getByLabel('恢复后打开备份中的原练习（暂停）').check()
+    await restored.getByRole('button', { name: '确认追加恢复', exact: true }).click()
+    await expect(restored.locator('.library-notice')).toContainText('已恢复')
+    await waitSaved(restored)
+    const recovered = await readSnapshot<PracticeSnapshot>(restored)
+    expect(recovered.id).not.toBe(candidate.id)
+    expect(recovered.account).toEqual(candidate.account)
+    expect(recovered.sourceState).toEqual(candidate.sourceState)
+    await restored.getByText('查看与修订本笔计划', { exact: true }).click()
+    await expect(restored.locator('.annotation-editor')).toContainText('配额失败也保留事前计划')
+    await expect(restored.getByTestId('progress')).toContainText('已暂停')
+  } finally { await context.close() }
+  const oldRow = page.locator('.session-list > li').filter({ has: page.getByRole('button', { name: '删除', exact: true }) }).first()
+  await expect(oldRow.getByRole('button', { name: '删除', exact: true })).toBeEnabled()
+  page.once('dialog', dialog => dialog.accept())
+  await oldRow.getByRole('button', { name: '删除', exact: true }).click()
+  await expect(page.locator('.session-list > li')).toHaveCount(1)
+  expect(await readSnapshot(page, old.id)).toBeUndefined()
+  await expect(page.getByTestId('save-status')).toHaveText('保存失败')
+  await page.evaluate(() => { IDBObjectStore.prototype.put = Reflect.get(window, '__fxQuotaOriginalPut') as typeof IDBObjectStore.prototype.put })
+  await page.getByRole('button', { name: '重试保存', exact: true }).click()
+  await waitSaved(page)
+  expect(await readSnapshot(page)).toEqual(candidate)
+  await page.getByText('查看与修订本笔计划', { exact: true }).click()
+  await expect(page.locator('.annotation-editor')).toContainText('配额失败也保留事前计划')
+})
+
 test('损坏备份与取消预览不覆盖当前练习，删除需要明确选择且不会删除当前会话', async ({ page }) => {
   await page.goto('/')
   await waitSaved(page)

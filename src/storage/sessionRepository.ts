@@ -15,6 +15,13 @@ export interface LoadedSession { snapshot: PracticeSnapshot; dataset: HistoryDat
 export interface DatasetListEntry { id: string; summary: HistoryDatasetSummary | null; errorMessage: string | null }
 export interface RestoreResult { sessionIds: string[]; currentSessionId: string | null; loadedSession: LoadedSession | null }
 export interface StorageHealth { usageBytes: number | null; quotaBytes: number | null; isPersistent: boolean | null }
+export interface CleanupProtection { sessionId: string; datasetId: string | null }
+export interface RecoveryBackupInput {
+  snapshot: PracticeSnapshot
+  dataset: HistoryDataset | null
+  annotation?: PendingTradeAnnotation
+  trainingContext?: TrainingContextInput
+}
 
 export interface SessionRepository {
   loadCurrent(): Promise<PracticeSnapshot | null>
@@ -28,11 +35,13 @@ export interface SessionRepository {
   loadDataset(id: string): Promise<HistoryDataset | null>
   listDatasetEntries(): Promise<DatasetListEntry[]>
   exportBackupJson(signal?: AbortSignal): Promise<string>
+  exportSessionBackupJson(id: string, signal?: AbortSignal): Promise<string>
+  exportRecoveryBackupJson(input: RecoveryBackupInput, signal?: AbortSignal): Promise<string>
   previewBackup(json: string, signal?: AbortSignal): Promise<BackupPreview>
   discardBackupPreview(id: string): void
   restoreBackup(preview: BackupPreview, options?: { openRestoredSession?: boolean; signal?: AbortSignal }): Promise<RestoreResult>
-  deleteSession(id: string, expectedRevision: number): Promise<void>
-  deleteDataset(id: string): Promise<void>
+  deleteSession(id: string, expectedRevision: number, protection?: CleanupProtection): Promise<void>
+  deleteDataset(id: string, protection?: CleanupProtection): Promise<void>
   getTradeAnnotation(sessionId: string, tradeId: string): Promise<TradeAnnotation | null>
   getTrainingContext(sessionId: string): Promise<SessionTrainingContext | null>
   listTradeAnnotations(sessionId: string): Promise<TradeAnnotation[]>
@@ -804,7 +813,8 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
       && (toTimestampMs === undefined || frame.quote.timestampMs <= toTimestampMs) && frame.quote.timestampMs <= snapshot.sourceState.currentTimestampMs))
   }
 
-  async function deleteSession(id: string, expectedRevision: number): Promise<void> {
+  async function deleteSession(id: string, expectedRevision: number, protection?: CleanupProtection): Promise<void> {
+    if (id === protection?.sessionId) throw new Error('不能删除当前窗口的未保存练习。')
     await writeTransaction(['sessions', 'sessionSummaries', 'historyChunks', 'annotations', 'observations'], (transaction, abort) => {
       const pointer = transaction.objectStore('settings').get('current')
       pointer.onsuccess = () => {
@@ -824,19 +834,22 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
           }
         } catch (error) { abort(error) }
       }
-    })
+    }, { checkBaseline: protection !== undefined })
   }
-  async function deleteDataset(id: string): Promise<void> {
+  async function deleteDataset(id: string, protection?: CleanupProtection): Promise<void> {
+    if (id === protection?.datasetId) throw new Error('此数据集仍被当前窗口的未保存练习引用。')
     await writeTransaction(['sessions', 'datasets', 'datasetSummaries'], (transaction, abort) => {
       const sessions = transaction.objectStore('sessions').openCursor()
       sessions.onsuccess = () => {
         const cursor = sessions.result
         if (!cursor) { transaction.objectStore('datasets').delete(id); transaction.objectStore('datasetSummaries').delete(id); return }
-        const snapshot = cursor.value as PracticeSnapshot
-        if (snapshot.schemaVersion === 4 && snapshot.sourceState.datasetId === id) { abort(new Error('此数据集仍被练习引用，请先删除相关练习。')); return }
-        cursor.continue()
+        try {
+          const snapshot = cursor.value as PracticeSnapshot
+          if (snapshot.schemaVersion === 4 && snapshot.sourceState.datasetId === id) throw new Error('此数据集仍被练习引用，请先删除相关练习。')
+          cursor.continue()
+        } catch (error) { abort(error) }
       }
-    })
+    }, { checkBaseline: protection !== undefined })
     if (verifiedDataset?.id === id) verifiedDataset = null
   }
 
@@ -935,6 +948,126 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
   async function exportBackupJson(signal?: AbortSignal): Promise<string> {
     checkCancelled(signal)
     const { backup } = await captureLibrary()
+    const json = JSON.stringify(backup)
+    checkBackupSize(json)
+    await validatePracticeBackup(backup, false, signal)
+    checkCancelled(signal)
+    return json
+  }
+  async function captureSessionBackup(sessionId: string, candidate?: PracticeSnapshot): Promise<PracticeBackup> {
+    const database = await openDatabase()
+    return new Promise<PracticeBackup>((resolve, reject) => {
+      const transaction = database.transaction(['sessions', 'settings', 'historyChunks', 'datasets', 'annotations', 'observations', 'sessionSummaries'], 'readonly')
+      const backup: PracticeBackup = { backupFormatVersion: 1, exportedAtMs: Date.now(), currentSessionId: sessionId,
+        sessions: [], historyChunks: [], datasets: [], annotations: [], observations: [], trainingContexts: [], sessionTimes: [], onboardingStatus: null }
+      let failure: unknown = null
+      const session = transaction.objectStore('sessions').get(sessionId)
+      session.onsuccess = () => {
+        try {
+          if (session.result !== undefined) backup.sessions = [session.result as unknown]
+          const snapshot = candidate ?? session.result as PracticeSnapshot | undefined
+          if (snapshot?.schemaVersion === 4) {
+            const source = transaction.objectStore('datasets').get(snapshot.sourceState.datasetId)
+            source.onsuccess = () => { if (source.result !== undefined) backup.datasets = [source.result as HistoryDataset] }
+          }
+        } catch (error) { failure = error; transaction.abort() }
+      }
+      const chunks = transaction.objectStore('historyChunks').getAll(IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]))
+      chunks.onsuccess = () => { backup.historyChunks = chunks.result as HistoryChunk[] }
+      const annotations = transaction.objectStore('annotations').getAll(IDBKeyRange.bound([sessionId, ''], [sessionId, '\uffff']))
+      annotations.onsuccess = () => { backup.annotations = annotations.result as TradeAnnotation[] }
+      const observations = transaction.objectStore('observations').openCursor()
+      observations.onsuccess = () => {
+        try {
+          const cursor = observations.result
+          if (!cursor) return
+          const observation = validateSessionObservation(cursor.value as unknown)
+          if (observation.sessionId === sessionId) backup.observations.push(observation)
+          cursor.continue()
+        } catch (error) { failure = error; transaction.abort() }
+      }
+      const context = transaction.objectStore('settings').get(['training', sessionId])
+      context.onsuccess = () => {
+        try { if (context.result !== undefined) backup.trainingContexts = [validateSessionTrainingContext(context.result as unknown)] }
+        catch (error) { failure = error; transaction.abort() }
+      }
+      const summary = transaction.objectStore('sessionSummaries').get(sessionId)
+      summary.onsuccess = () => {
+        try {
+          if (summary.result === undefined) return
+          const saved = validateSessionSummary(summary.result as unknown)
+          if (saved.errorMessage || saved.id !== sessionId) throw new Error('练习摘要损坏，不能导出正常备份；原有数据保留。')
+          backup.sessionTimes = [{ id: sessionId, createdAtMs: saved.createdAtMs, savedAtMs: saved.savedAtMs }]
+        } catch (error) { failure = error; transaction.abort() }
+      }
+      transaction.oncomplete = () => resolve(backup)
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('读取练习备份材料失败，原有数据保留。'))
+    })
+  }
+  async function exportRecoveryBackupJson(input: RecoveryBackupInput, signal?: AbortSignal): Promise<string> {
+    checkCancelled(signal)
+    const snapshot = copyPracticeSnapshot(input.snapshot)
+    const committed = await captureSessionBackup(snapshot.id, snapshot)
+    const backup: PracticeBackup = { ...committed, currentSessionId: snapshot.id, sessions: [snapshot], historyChunks: [],
+      datasets: [], annotations: committed.annotations.filter(annotation => annotation.sessionId === snapshot.id
+        && (snapshot.account.position?.id === annotation.tradeId || snapshot.trades.some(trade => trade.id === annotation.tradeId))),
+      observations: committed.observations.filter(observation => observation.sessionId === snapshot.id
+        && observation.frameIndex <= snapshot.sourceState.frameIndex),
+      trainingContexts: committed.trainingContexts.filter(context => context.sessionId === snapshot.id),
+      sessionTimes: committed.sessionTimes.filter(times => times.id === snapshot.id) }
+    if (snapshot.schemaVersion === 4) {
+      const dataset = input.dataset?.id === snapshot.sourceState.datasetId ? input.dataset
+        : committed.datasets.find(source => source.id === snapshot.sourceState.datasetId)
+      if (!dataset) throw new Error('故障备份缺少原始历史数据集；请保留当前窗口和原数据库。')
+      backup.datasets = [dataset]
+    } else {
+      const chunks = new Map<number, HistoryChunk>()
+      const frameCount = snapshot.sourceState.frameIndex + 1
+      const legacy = committed.sessions.find(raw => raw && typeof raw === 'object' && 'id' in raw && raw.id === snapshot.id
+        && 'schemaVersion' in raw && (raw.schemaVersion === 1 || raw.schemaVersion === 2))
+      const prefix = legacy && typeof legacy === 'object' && 'frames' in legacy && Array.isArray(legacy.frames) ? legacy.frames as MarketFrame[] : null
+      if (prefix) {
+        for (let index = 0; index < Math.min(prefix.length, frameCount); index += SESSION_FRAME_WINDOW_SIZE) {
+          chunks.set(index / SESSION_FRAME_WINDOW_SIZE, { sessionId: snapshot.id, chunkIndex: index / SESSION_FRAME_WINDOW_SIZE,
+            frames: structuredClone(prefix.slice(index, Math.min(index + SESSION_FRAME_WINDOW_SIZE, frameCount))) })
+        }
+      } else {
+        for (const chunk of committed.historyChunks) {
+          if (chunk.sessionId === snapshot.id && chunk.chunkIndex * SESSION_FRAME_WINDOW_SIZE < frameCount) {
+            chunks.set(chunk.chunkIndex, { ...chunk, frames: chunk.frames.slice(0, frameCount - chunk.chunkIndex * SESSION_FRAME_WINDOW_SIZE) })
+          }
+        }
+      }
+      for (let index = 0; index < snapshot.frames.length; index += 1) {
+        const frameIndex = snapshot.frameStartIndex + index
+        const chunkIndex = Math.floor(frameIndex / SESSION_FRAME_WINDOW_SIZE)
+        const chunk = chunks.get(chunkIndex) ?? { sessionId: snapshot.id, chunkIndex, frames: [] }
+        chunk.frames[frameIndex % SESSION_FRAME_WINDOW_SIZE] = snapshot.frames[index]!
+        chunks.set(chunkIndex, chunk)
+        if (index % 128 === 0) { checkCancelled(signal); await yieldToEventLoop() }
+      }
+      backup.historyChunks = [...chunks.values()].sort((left, right) => left.chunkIndex - right.chunkIndex)
+    }
+    if (input.annotation) {
+      const pending = input.annotation
+      const prior = backup.annotations.find(annotation => annotation.tradeId === pending.tradeId) ?? null
+      const saved = committed.sessions.find(raw => raw && typeof raw === 'object' && 'id' in raw && raw.id === snapshot.id) as PracticeSnapshot | undefined
+      const annotation = reviseTradeAnnotation(snapshot.id, pending.tradeId, prior, pending,
+        snapshot.account.position?.id === pending.tradeId && saved?.account.position?.id !== pending.tradeId)
+      backup.annotations = [...backup.annotations.filter(item => item.tradeId !== pending.tradeId), annotation]
+    }
+    if (input.trainingContext) backup.trainingContexts = [createSessionTrainingContext(snapshot.id, input.trainingContext)]
+    checkCancelled(signal)
+    const json = JSON.stringify(backup)
+    checkBackupSize(json)
+    await validatePracticeBackup(backup, false, signal)
+    checkCancelled(signal)
+    return json
+  }
+  async function exportSessionBackupJson(id: string, signal?: AbortSignal): Promise<string> {
+    checkCancelled(signal)
+    const backup = await captureSessionBackup(id)
+    if (!backup.sessions.length) throw new Error('练习不存在，无法导出备份。')
     const json = JSON.stringify(backup)
     checkBackupSize(json)
     await validatePracticeBackup(backup, false, signal)
@@ -1042,7 +1175,7 @@ export function createSessionRepository(databaseName = 'fx-simulation'): Session
     loadCurrent, loadCurrentWithSource, loadSession, activateSession, listSessions, importDataset, listDatasets, listDatasetEntries, loadDataset,
     getTradeAnnotation, getTrainingContext, listTradeAnnotations, saveTradeAnnotation, readSessionFrames, deleteSession, deleteDataset,
     storageHealth, requestPersistentStorage, getOnboardingStatus, setOnboardingStatus, listSessionObservations, recordSessionObservation,
-    exportBackupJson, previewBackup, discardBackupPreview, restoreBackup,
+    exportBackupJson, exportSessionBackupJson, exportRecoveryBackupJson, previewBackup, discardBackupPreview, restoreBackup,
     save(snapshot, annotation, trainingContext) { return isHistoricalSnapshot(snapshot) ? saveHistorical(snapshot, annotation, trainingContext) : saveSimulation(snapshot, annotation, trainingContext) },
     close() {
       if (databasePromise) void databasePromise.then(database => database.close(), () => undefined)

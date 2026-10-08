@@ -159,6 +159,98 @@ describe('real IndexedDB practice library integration', () => {
     expect(await repository(name).loadCurrent()).toEqual(committed)
   })
 
+  it('cleans unrelated records after a quota failure and retries the same position and first plan', async () => {
+    const { store, repository: storage, name } = await createStore()
+    const old = structuredClone(store.snapshot)!
+    await store.startNewSession('GBP/USD')
+    const source = await history()
+    expect(await store.importHistoryDataset(source)).toBe(true)
+    const save = vi.spyOn(storage, 'save').mockRejectedValueOnce(new DOMException('隔离配额失败', 'QuotaExceededError'))
+    await store.openTrade('long', '1000', { entryReason: '保留故障前计划', exitPlan: '稍后手动平仓' })
+    const candidate = structuredClone(store.snapshot)!
+    const positionId = candidate.account.position!.id
+    expect(store.saveStatus).toBe('error')
+    expect(store.canOperate).toBe(false)
+    expect(store.canCleanStorage).toBe(true)
+    expect(await store.deleteSavedSession(old.id, old.revision)).toBe(true)
+    expect(await store.deleteHistoryDataset(source.id)).toBe(true)
+    expect(store.snapshot).toEqual(candidate)
+    expect(store.saveStatus).toBe('error')
+    await store.retrySave()
+    expect(store.snapshot).toEqual(candidate)
+    expect(store.saveStatus).toBe('saved')
+    expect(save).toHaveBeenCalledTimes(2)
+    const reopened = repository(name)
+    expect(await reopened.loadCurrent()).toEqual(candidate)
+    expect((await reopened.getTradeAnnotation(candidate.id, positionId))?.firstPlan?.entryReason).toBe('保留故障前计划')
+  })
+
+  it('refuses cleanup from a failed stale window and protects an uncommitted historical source', async () => {
+    const first = await createStore()
+    const old = structuredClone(first.store.snapshot)!
+    const source = await history()
+    await first.store.importHistoryDataset(source)
+    await first.store.startNewSession('GBP/USD')
+    const second = await createStore(first.name)
+    await first.store.next()
+    await second.store.openTrade('short', '1000')
+    expect(second.store.saveStatus).toBe('error')
+    expect(await second.store.deleteSavedSession(old.id, old.revision)).toBe(false)
+    expect(await second.store.deleteHistoryDataset(source.id)).toBe(false)
+    expect(second.store.libraryErrorMessage).toContain('另一窗口')
+    expect(await repository(first.name).loadSession(old.id)).not.toBeNull()
+    expect(await repository(first.name).loadDataset(source.id)).not.toBeNull()
+    const saveCurrent = first.repository.save.bind(first.repository)
+    vi.spyOn(first.repository, 'save').mockImplementationOnce(saveCurrent)
+      .mockRejectedValueOnce(new DOMException('隔离配额失败', 'QuotaExceededError'))
+    await first.store.startHistorySession(source.id)
+    const pending = structuredClone(first.store.snapshot)!
+    expect(first.store.saveStatus).toBe('error')
+    expect(await first.store.deleteHistoryDataset(source.id)).toBe(false)
+    expect(first.store.libraryErrorMessage).toContain('未保存练习引用')
+    expect(first.store.snapshot).toEqual(pending)
+  })
+
+  it('restores a failed entry and its first plan from a recovery backup in another database', async () => {
+    const { store, repository: storage, name } = await createStore()
+    const committed = structuredClone(store.snapshot)!
+    vi.spyOn(storage, 'save').mockRejectedValueOnce(new DOMException('隔离配额失败', 'QuotaExceededError'))
+    await store.openTrade('long', '1000', { entryReason: '故障候选的原计划', exitPlan: '退出计划也要保留' })
+    const candidate = structuredClone(store.snapshot)!
+    const json = await store.exportRecoveryBackupJson()
+    expect(json).not.toBeNull()
+    expect(store.snapshot).toEqual(candidate)
+    expect(store.saveStatus).toBe('error')
+    expect(await repository(name).loadCurrent()).toEqual(committed)
+    const target = repository(`fx-recovery-target-${crypto.randomUUID()}`)
+    const preview = await target.previewBackup(json!)
+    const result = await target.restoreBackup(preview)
+    expect(result.loadedSession?.snapshot).toEqual(candidate)
+    expect((await target.getTradeAnnotation(candidate.id, candidate.account.position!.id))?.firstPlan).toEqual({
+      entryReason: '故障候选的原计划', exitPlan: '退出计划也要保留',
+    })
+  })
+
+  it('includes the complete historical source in an independently restored failed entry', async () => {
+    const { store, repository: storage } = await createStore()
+    const source = await history()
+    await store.importHistoryDataset(source)
+    await store.startHistorySession(source.id, { warmupFrameCount: 0 })
+    vi.spyOn(storage, 'save').mockRejectedValueOnce(new DOMException('隔离配额失败', 'QuotaExceededError'))
+    await store.openTrade('short', '500', { entryReason: '历史故障计划', exitPlan: '' })
+    const candidate = structuredClone(store.snapshot)!
+    const json = await store.exportRecoveryBackupJson()
+    expect(json).not.toBeNull()
+    expect(JSON.parse(json!).datasets[0].frames).toEqual(source.frames)
+    const target = repository(`fx-history-recovery-${crypto.randomUUID()}`)
+    const restored = await target.restoreBackup(await target.previewBackup(json!))
+    expect(restored.loadedSession?.snapshot).toEqual(candidate)
+    expect(restored.loadedSession?.dataset?.frames).toEqual(source.frames)
+    expect((await target.getTradeAnnotation(candidate.id, candidate.account.position!.id))?.firstPlan?.entryReason).toBe('历史故障计划')
+    expect(store.saveStatus).toBe('error')
+    expect(store.snapshot).toEqual(candidate)
+  })
+
   it('appends backup copies while keeping current by default and opens a copy only when selected', async () => {
     const { store, name } = await createStore()
     await store.openTrade('short', '1000')
@@ -258,6 +350,12 @@ describe('real IndexedDB practice library integration', () => {
     expect(await repository(name).loadCurrent()).toEqual(original)
     expect(await repository(name).loadSession(candidate.id)).toBeNull()
     vi.restoreAllMocks()
+    const recoveryJson = await store.exportRecoveryBackupJson()
+    const recovered = repository(`fx-repeat-recovery-${crypto.randomUUID()}`)
+    await recovered.restoreBackup(await recovered.previewBackup(recoveryJson!))
+    expect(await recovered.loadCurrent()).toEqual(candidate)
+    expect((await recovered.getTrainingContext(candidate.id))?.kind).toBe('repeat')
+    expect((await recovered.getTrainingContext(candidate.id))?.isImportedClaim).toBe(true)
     await store.retrySave()
     expect(store.saveStatus).toBe('saved')
     expect(store.snapshot!.id).toBe(candidate.id)

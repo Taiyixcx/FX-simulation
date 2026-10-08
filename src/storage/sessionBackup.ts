@@ -39,8 +39,8 @@ export interface ValidatedBackup extends Omit<PracticeBackup, 'sessions'> { sess
 export function checkCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException('操作已取消，原有数据保留。', 'AbortError')
 }
-function array(input: unknown, label: string, max: number): unknown[] {
-  if (!Array.isArray(input) || input.length > max) throw new Error(`${label}格式或数量无效。`)
+function array(input: unknown, label: string): unknown[] {
+  if (!Array.isArray(input)) throw new Error(`${label}格式无效。`)
   return input
 }
 function nullableTime(input: unknown): number | null {
@@ -56,13 +56,13 @@ export async function validatePracticeBackup(input: unknown, external = true, si
   const backup = input as PracticeBackup
   if (!Number.isSafeInteger(backup.exportedAtMs) || backup.exportedAtMs < 0 || (backup.currentSessionId !== null && typeof backup.currentSessionId !== 'string')) throw new Error('备份时间或当前练习入口无效。')
   if (backup.onboardingStatus !== null && backup.onboardingStatus !== 'completed' && backup.onboardingStatus !== 'skipped') throw new Error('引导状态无效。')
-  const rawSessions = array(backup.sessions, '练习', 1000)
-  const rawDatasets = array(backup.datasets, '数据集', 50)
-  const rawChunks = array(backup.historyChunks, '行情块', 10_000)
-  const rawAnnotations = array(backup.annotations, '备注', 100_000)
-  const rawObservations = array(backup.observations, '观察记录', 100_000)
-  const rawTrainingContexts = array(backup.trainingContexts === undefined ? [] : backup.trainingContexts, '训练对照信息', 1000)
-  const rawTimes = array(backup.sessionTimes, '练习时间', 1000)
+  const rawSessions = array(backup.sessions, '练习')
+  const rawDatasets = array(backup.datasets, '数据集')
+  const rawChunks = array(backup.historyChunks, '行情块')
+  const rawAnnotations = array(backup.annotations, '备注')
+  const rawObservations = array(backup.observations, '观察记录')
+  const rawTrainingContexts = array(backup.trainingContexts === undefined ? [] : backup.trainingContexts, '训练对照信息')
+  const rawTimes = array(backup.sessionTimes, '练习时间')
   const datasets = new Map<string, HistoryDataset>()
   for (const raw of rawDatasets) {
     checkCancelled(signal)
@@ -80,7 +80,8 @@ export async function validatePracticeBackup(input: unknown, external = true, si
   }
   const chunks = new Map<string, HistoryChunk[]>()
   const chunkKeys = new Set<string>()
-  for (const raw of rawChunks) {
+  for (const [index, raw] of rawChunks.entries()) {
+    if (index % 128 === 0) { checkCancelled(signal); await yieldToEventLoop() }
     if (!raw || typeof raw !== 'object') throw new Error('行情块格式无效。')
     const chunk = raw as HistoryChunk
     if (typeof chunk.sessionId !== 'string' || !Number.isSafeInteger(chunk.chunkIndex) || chunk.chunkIndex < 0
@@ -120,7 +121,15 @@ export async function validatePracticeBackup(input: unknown, external = true, si
       for (let index = 0; index < storedChunks.length; index += 1) {
         const chunk = storedChunks[index]!
         if (chunk.chunkIndex !== index || chunk.frames.length !== Math.min(SESSION_FRAME_WINDOW_SIZE, count - index * SESSION_FRAME_WINDOW_SIZE)) throw new Error('备份行情块次序或长度不一致。')
-        for (const frame of chunk.frames) validator.pushFrame(frame)
+        let batchStartedAt = performance.now()
+        for (const [frameIndex, frame] of chunk.frames.entries()) {
+          validator.pushFrame(frame)
+          if ((frameIndex + 1) % 128 === 0 || performance.now() - batchStartedAt >= 16) {
+            checkCancelled(signal)
+            await yieldToEventLoop()
+            batchStartedAt = performance.now()
+          }
+        }
         normalizedChunks.push(chunk)
         checkCancelled(signal)
         await yieldToEventLoop()

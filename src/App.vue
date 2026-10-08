@@ -22,6 +22,8 @@ import { formatPrice } from './priceFormatting'
 
 const session = useSessionStore()
 const chartType = ref<'line' | 'candlestick'>('line')
+const recoveryExportError = ref('')
+const downloadUrls = new Set<string>()
 let reviewOrigin: HTMLElement | null = null
 const formattedBid = computed(() => session.currentQuote ? formatPrice(session.currentQuote.bidPrice) : '')
 const saveLabel = computed(() => ({ idle: '等待保存', saving: '保存中…', saved: '已保存到本机', error: '保存失败' })[session.saveStatus])
@@ -34,15 +36,28 @@ function changePair(event: Event) {
   void session.switchPair(pair)
 }
 
-function exportSnapshot() {
-  const snapshotJson = session.exportSnapshotJson()
-  if (!snapshotJson) return
-  const url = URL.createObjectURL(new Blob([snapshotJson], { type: 'application/json' }))
+function downloadJson(json: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json;charset=utf-8' }))
+  downloadUrls.add(url)
   const link = document.createElement('a')
   link.href = url
-  link.download = `fx-snapshot-${session.snapshot?.id ?? 'recovery'}.json`
+  link.download = filename
+  document.body.append(link)
   link.click()
-  URL.revokeObjectURL(url)
+  link.remove()
+  setTimeout(() => { URL.revokeObjectURL(url); downloadUrls.delete(url) }, 1_000)
+}
+
+function exportSnapshot() {
+  const snapshotJson = session.exportSnapshotJson()
+  if (snapshotJson) downloadJson(snapshotJson, `fx-snapshot-${session.snapshot?.id ?? 'recovery'}.json`)
+}
+
+async function exportRecoveryBackup() {
+  recoveryExportError.value = ''
+  const backupJson = await session.exportRecoveryBackupJson()
+  if (backupJson) downloadJson(backupJson, `fx-recovery-backup-${session.snapshot?.id ?? 'recovery'}.json`)
+  else recoveryExportError.value = session.libraryErrorMessage || '故障备份未生成，请保留当前窗口并重试，或导出当前快照。'
 }
 
 function warnUnsavedSnapshot(event: BeforeUnloadEvent) {
@@ -118,6 +133,8 @@ onMounted(() => {
   window.addEventListener('beforeunload', warnUnsavedSnapshot)
 })
 onBeforeUnmount(() => {
+  for (const url of downloadUrls) URL.revokeObjectURL(url)
+  downloadUrls.clear()
   window.removeEventListener('beforeunload', warnUnsavedSnapshot)
   session.dispose()
   reviewOrigin = null
@@ -145,8 +162,10 @@ onBeforeUnmount(() => {
       <div class="recovery-actions">
         <button v-if="session.loadStatus === 'error'" class="button-outline" :disabled="session.isBusy" @click="session.retryLoad()"><Icon name="refresh" :size="16" />重试读取</button>
         <button v-if="session.saveStatus === 'error'" class="button-outline" :disabled="session.isBusy" @click="session.retrySave()"><Icon name="refresh" :size="16" />重试保存</button>
+        <button v-if="session.saveStatus === 'error'" class="button-outline" :disabled="session.isBusy || session.isLibraryBusy" @click="exportRecoveryBackup"><Icon name="download" :size="16" />导出可恢复故障备份</button>
         <button v-if="session.saveStatus === 'error' || session.rawRecoveryJson" class="button-outline" @click="exportSnapshot"><Icon name="download" :size="16" />导出当前快照</button>
       </div>
+      <p v-if="recoveryExportError" role="alert">{{ recoveryExportError }}</p>
     </section>
     <section v-if="session.libraryErrorMessage && !session.errorMessage" class="error-banner" aria-label="资料操作提示"><p role="status">{{ session.libraryErrorMessage }}</p><button class="button-outline" @click="focusLibrary">查看练习与备份</button></section>
     <template v-if="session.snapshot && session.currentQuote">

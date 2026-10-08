@@ -32,6 +32,160 @@ async function dataset(verified = false) {
 }
 
 describe('practice library and complete backups', () => {
+  it('exports and restores 51 datasets and 1001 small sessions within the byte budget', async () => {
+    const original = repository()
+    await original.loadCurrent()
+    for (let index = 0; index < 51; index += 1) {
+      const timestamp = new Date(Date.UTC(2024, 0, 1, 0, index + 1)).toISOString()
+      await original.importDataset(await parseHistoryCsv(`timestamp,open,high,low,close,ask\n${timestamp},1.1,1.1,1.1,1.1,1.1002`, 'EUR/USD', { label: `隔离小样本 ${index}` }))
+    }
+    const first = makeSession()
+    for (let index = 0; index < 1001; index += 1) await original.save({ ...structuredClone(first), id: `small-session-${index}` })
+    const json = await original.exportBackupJson()
+    const target = repository()
+    const preview = await target.previewBackup(json)
+    expect(preview.sessionCount).toBe(1001)
+    expect(preview.datasetCount).toBe(51)
+    await target.restoreBackup(preview)
+    expect(await target.listSessions()).toHaveLength(1001)
+    expect(await target.listDatasets()).toHaveLength(51)
+    expect((await target.loadCurrent())?.id).toBe('small-session-1000')
+  }, 30_000)
+
+  it('exports a single archived practice and a failed boundary append as independently restorable backups', async () => {
+    const original = repository()
+    await original.loadCurrent()
+    const initial = makeSession('EUR/USD', null)
+    await original.save(initial)
+    const archived = extendSession(initial, 1440)
+    await original.save(archived)
+    const other = { ...makeSession('GBP/USD'), id: 'another-practice' }
+    await original.save(other)
+    const separate = await original.exportSessionBackupJson(archived.id)
+    expect(JSON.parse(separate).sessions).toHaveLength(1)
+    const target = repository()
+    const restored = await target.restoreBackup(await target.previewBackup(separate))
+    expect(restored.loadedSession?.snapshot).toEqual(archived)
+    expect(await target.readSessionFrames(archived.id)).toHaveLength(1441)
+    const candidate = extendSession(archived, 10)
+    const recovery = await original.exportRecoveryBackupJson({ snapshot: candidate, dataset: null })
+    const copy = repository()
+    await copy.restoreBackup(await copy.previewBackup(recovery))
+    expect(await copy.loadCurrent()).toEqual(candidate)
+    expect(await copy.readSessionFrames(candidate.id)).toHaveLength(1451)
+    expect(await original.loadCurrent()).toEqual(other)
+  }, 30_000)
+
+  it('rejects damaged recovery prefixes and cancellation without mutating the current library', async () => {
+    const name = `fx-recovery-${crypto.randomUUID()}`
+    const original = repository(name)
+    await original.loadCurrent()
+    const initial = makeSession('EUR/USD', null)
+    await original.save(initial)
+    const archived = extendSession(initial, 1440)
+    await original.save(archived)
+    const candidate = extendSession(archived, 10)
+    const controller = new AbortController()
+    controller.abort()
+    await expect(original.exportRecoveryBackupJson({ snapshot: candidate, dataset: null }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    await access(name, async database => {
+      const transaction = database.transaction('historyChunks', 'readwrite')
+      transaction.objectStore('historyChunks').delete([archived.id, 0])
+      await transactionDone(transaction)
+    })
+    await expect(original.exportRecoveryBackupJson({ snapshot: candidate, dataset: null })).rejects.toThrow('行情')
+    expect((await original.listSessions())[0]?.revision).toBe(archived.revision)
+  }, 15_000)
+
+  it('captures a single practice head, source and annotations in one transaction while another window updates', async () => {
+    const name = `fx-single-backup-${crypto.randomUUID()}`
+    const original = repository(name)
+    await original.loadCurrent()
+    const source = await dataset()
+    await original.importDataset(source)
+    const snapshot = createHistoricalSnapshot(source)
+    snapshot.account = openPosition(snapshot.account, snapshot.frames[0]!.quote, snapshot.pair, 'long', '1000', 'atomic-plan')
+    snapshot.revision += 1
+    await original.save(snapshot, { tradeId: 'atomic-plan', expectedRevision: null, entryReason: '事务内原计划', exitPlan: '' })
+    const second = repository(name)
+    await second.loadCurrent()
+    let concurrent: Promise<void> | null = null
+    const capturedTransactions: IDBTransaction[] = []
+    const get = IDBObjectStore.prototype.get
+    vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, key: IDBValidKey | IDBKeyRange) {
+      const request = get.call(this, key)
+      if (this.transaction.mode === 'readonly' && ['sessions', 'datasets', 'sessionSummaries'].includes(this.name)) capturedTransactions.push(this.transaction)
+      if (this.name === 'sessions' && key === snapshot.id && concurrent === null) {
+        request.addEventListener('success', () => {
+          concurrent = second.save({ ...structuredClone(snapshot), revision: snapshot.revision + 1 }, {
+            tradeId: 'atomic-plan', expectedRevision: 0, entryReason: '另一窗口后续修订', exitPlan: '后续退出条件',
+          })
+        }, { once: true })
+      }
+      return request
+    })
+    const getAll = IDBObjectStore.prototype.getAll
+    vi.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (this: IDBObjectStore, query?: IDBValidKey | IDBKeyRange | null, count?: number) {
+      if (this.name === 'annotations' || this.name === 'historyChunks') capturedTransactions.push(this.transaction)
+      return getAll.call(this, query, count)
+    })
+    const json = await original.exportSessionBackupJson(snapshot.id)
+    await concurrent
+    const backup = JSON.parse(json)
+    expect(backup.sessions[0]).toEqual(snapshot)
+    expect(backup.annotations[0].firstPlan.entryReason).toBe('事务内原计划')
+    expect(backup.annotations[0].planRevisions).toHaveLength(1)
+    expect(new Set(capturedTransactions).size).toBe(1)
+    expect((await second.getTradeAnnotation(snapshot.id, 'atomic-plan'))?.planRevisions).toHaveLength(2)
+  })
+
+  it('rejects damaged single-practice metadata without hanging or changing stored records', async () => {
+    const name = `fx-bad-summary-${crypto.randomUUID()}`
+    const original = repository(name)
+    await original.loadCurrent()
+    const snapshot = makeSession()
+    await original.save(snapshot)
+    const corrupted = { id: snapshot.id, createdAtMs: 'invalid', savedAtMs: 1 }
+    await access(name, async database => {
+      const transaction = database.transaction('sessionSummaries', 'readwrite')
+      transaction.objectStore('sessionSummaries').put(corrupted)
+      await transactionDone(transaction)
+    })
+    await expect(original.exportSessionBackupJson(snapshot.id)).rejects.toThrow('摘要损坏')
+    await expect(original.exportRecoveryBackupJson({ snapshot: extendSession(snapshot), dataset: null })).rejects.toThrow('摘要损坏')
+    expect(await original.loadCurrent()).toEqual(snapshot)
+    await access(name, async database => {
+      const transaction = database.transaction('sessionSummaries', 'readonly')
+      const request = transaction.objectStore('sessionSummaries').get(snapshot.id)
+      request.onsuccess = () => { expect(request.result).toEqual(corrupted) }
+      await transactionDone(transaction)
+    })
+  })
+
+  it('rejects damaged observation metadata during capture and preserves the original record', async () => {
+    const name = `fx-bad-observation-${crypto.randomUUID()}`
+    const original = repository(name)
+    await original.loadCurrent()
+    const snapshot = makeSession()
+    await original.save(snapshot)
+    const corrupted = { id: 'bad-observation', sessionId: snapshot.id, recordedAtMs: 1,
+      timestampMs: snapshot.sourceState.currentTimestampMs, frameIndex: 0, reason: null }
+    await access(name, async database => {
+      const transaction = database.transaction('observations', 'readwrite')
+      transaction.objectStore('observations').put(corrupted)
+      await transactionDone(transaction)
+    })
+    await expect(original.exportSessionBackupJson(snapshot.id)).rejects.toThrow('文本')
+    await expect(original.exportRecoveryBackupJson({ snapshot: extendSession(snapshot), dataset: null })).rejects.toThrow('文本')
+    expect(await original.loadCurrent()).toEqual(snapshot)
+    await access(name, async database => {
+      const transaction = database.transaction('observations', 'readonly')
+      const request = transaction.objectStore('observations').get(corrupted.id)
+      request.onsuccess = () => { expect(request.result).toEqual(corrupted) }
+      await transactionDone(transaction)
+    })
+  })
+
   it('activates existing records without rewriting them, detects A-B-A and deletes only inactive sessions', async () => {
     const name = `fx-library-${crypto.randomUUID()}`
     const first = repository(name)

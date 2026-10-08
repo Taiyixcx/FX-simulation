@@ -17,12 +17,12 @@ const operation = shallowRef<AbortController | null>(null)
 const objectUrls = new Set<string>()
 watch(pages, count => { page.value = Math.min(page.value, count - 1) })
 
-function download(text: string) {
+function download(text: string, prefix = 'fx-complete-backup') {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }))
   objectUrls.add(url)
   const link = document.createElement('a')
   link.href = url
-  link.download = `fx-complete-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  link.download = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
   document.body.append(link)
   link.click()
   link.remove()
@@ -33,6 +33,20 @@ async function exportBackup() {
   operation.value = new AbortController()
   const json = await session.exportBackupJson(operation.value.signal)
   if (json) download(json)
+  operation.value = null
+}
+
+async function exportRecoveryBackup() {
+  operation.value = new AbortController()
+  const json = await session.exportRecoveryBackupJson(operation.value.signal)
+  if (json) download(json, 'fx-recovery-backup')
+  operation.value = null
+}
+
+async function exportSessionBackup(id: string) {
+  operation.value = new AbortController()
+  const json = await session.exportSavedSessionBackupJson(id, operation.value.signal)
+  if (json) download(json, 'fx-practice-backup')
   operation.value = null
 }
 
@@ -101,7 +115,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="session-actions">
             <button class="button-outline" :disabled="!session.canOperate || item.isCurrent || !!item.errorMessage" @click="session.activateSavedSession(item.id)">继续练习</button>
-            <button v-if="!item.isCurrent" class="button-quiet delete-button" :disabled="!session.canOperate || item.revision === null" @click="deleteSession(item)">删除</button>
+            <button class="button-quiet" :disabled="isWorking || !!item.errorMessage" @click="exportSessionBackup(item.id)">备份</button>
+            <button v-if="!item.isCurrent" class="button-quiet delete-button" :disabled="isWorking || !session.canCleanStorage || item.id === session.snapshot?.id || item.revision === null" @click="deleteSession(item)">删除</button>
           </div>
         </li>
       </ul>
@@ -112,11 +127,13 @@ onBeforeUnmount(() => {
         <p class="explanation">备份包含全部练习、成交、备注、已发生模拟行情和完整历史数据集。请将文件保存在浏览器之外；它与故障时的当前快照不同。</p>
         <div class="backup-actions">
           <button class="button-outline" :disabled="isWorking" @click="exportBackup">导出完整备份</button>
+          <button v-if="session.saveStatus === 'error'" class="button-outline" :disabled="isWorking" @click="exportRecoveryBackup">导出可恢复故障备份</button>
           <label class="backup-file">选择备份文件<input ref="fileInput" type="file" accept=".json,application/json" :disabled="isWorking" @change="readBackup" /></label>
           <button v-if="operation" class="button-quiet" @click="cancelOperation">取消校验或导出</button>
         </div>
         <p v-if="session.isLibraryBusy" class="muted" role="status">正在校验或保存，请保留当前页面…</p>
-        <p v-if="session.saveStatus === 'error'" class="explanation error-text">当前有未保存状态：完整备份只包含最近成功提交的数据。请另行导出故障快照，并先重试保存后再恢复。</p>
+        <p v-if="session.saveStatus === 'error'" class="explanation error-text">完整备份只包含已提交数据。请另行导出可恢复故障备份，保留当前未保存练习及计划；空间不足时可删除无关旧练习或未使用数据集，再重试保存。先完成保存后才能在当前窗口恢复备份。</p>
+        <p class="explanation">单个备份最多 128 MiB。超过上限时可先分别导出需要保留的练习，再明确删除已备份的旧练习或未使用数据集；完整导出不会省略记录。</p>
         <div v-if="session.backupPreview" class="restore-preview" aria-label="恢复预览">
           <p><strong>校验通过</strong> · {{ session.backupPreview.sessionCount }} 个练习 · {{ session.backupPreview.datasetCount }} 个数据集 · {{ session.backupPreview.tradeCount }} 笔成交</p>
           <p>{{ session.backupPreview.mode === 'empty' ? '将恢复到当前空库。' : '将追加为独立练习副本，不覆盖当前练习或已有记录。' }} 来源声明会保留，导入文件本身不认证行情来源。</p>
@@ -130,7 +147,7 @@ onBeforeUnmount(() => {
         <p class="explanation">{{ session.storageHealth?.isPersistent === true ? '浏览器已启用持久存储。' : session.storageHealth?.isPersistent === false ? '当前使用浏览器默认存储。' : '此浏览器未提供持久存储状态。' }} 浏览器清理、更换浏览器或更换地址会影响数据，请保留外部备份。</p>
         <p v-if="session.storageHealth?.usageBytes !== null && session.storageHealth?.usageBytes !== undefined" class="muted">已用约 {{ (session.storageHealth.usageBytes / 1024 / 1024).toFixed(1) }} MiB<span v-if="session.storageHealth.quotaBytes !== null"> / 估算配额 {{ (session.storageHealth.quotaBytes / 1024 / 1024).toFixed(0) }} MiB</span>；估算不保证下一笔写入成功。</p>
         <button class="button-outline" :disabled="isWorking || session.storageHealth?.isPersistent === true" @click="session.requestPersistentStorage()">申请持久存储</button>
-        <details v-if="session.datasetEntries.length" class="dataset-cleanup"><summary>历史数据集清理</summary><ul><li v-for="entry in session.datasetEntries" :key="entry.id"><span>{{ entry.summary?.metadata.label ?? entry.id }}<span v-if="entry.errorMessage" class="error-text"> · {{ entry.errorMessage }}</span></span><button class="button-quiet delete-button" :disabled="!session.canOperate" @click="deleteDataset(entry.id, entry.summary?.metadata.label ?? entry.id)">删除未使用数据集</button></li></ul><p class="explanation">只有未被任何已保存练习引用的数据集可以删除。</p></details>
+        <details v-if="session.datasetEntries.length" class="dataset-cleanup"><summary>历史数据集清理</summary><ul><li v-for="entry in session.datasetEntries" :key="entry.id"><span>{{ entry.summary?.metadata.label ?? entry.id }}<span v-if="entry.errorMessage" class="error-text"> · {{ entry.errorMessage }}</span></span><button class="button-quiet delete-button" :disabled="isWorking || !session.canCleanStorage" @click="deleteDataset(entry.id, entry.summary?.metadata.label ?? entry.id)">删除未使用数据集</button></li></ul><p class="explanation">只有未被已保存练习或当前未保存练习引用的数据集可以删除。</p></details>
       </section>
     </div>
   </details>
