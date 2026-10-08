@@ -154,3 +154,13 @@
 - 已核查：Fontsource 的 npm 包可按字重、样式和子集导入字体 CSS；Inter 按 SIL Open Font License 1.1 分发。实际安装锁定 `@fontsource/inter` **5.3.0**，包内字体许可随产物保留。
 - 项目对应：仅打包 Latin 常用字重 400/500/600/700，英文及数字用 Inter，中文回退到本机系统字体；不在运行时请求 Google Fonts。跨功能图标用项目自己的 SVG 组件提供。
 - 适用限制：系统中文字体会因设备而异；本地字体打包不代表物理断网场景已测试。是否存在非本机资源请求需核对构建预览，实际结果见阶段记录。
+
+## Windows 便携运行时
+
+### E20：官方 Node.js 运行时与再分发文件
+
+[Node.js 下载](https://nodejs.org/en/download)、[24.21.0 官方校验表](https://nodejs.org/dist/v24.21.0/SHASUMS256.txt)、[该版本完整 LICENSE](https://github.com/nodejs/node/blob/v24.21.0/LICENSE) · **Node.js / OpenJS Foundation｜官方发行资料与许可**。核对日期：**2026-10-08**。对应：[分发与验证](../overview/08-distribution-and-verification.md)。
+
+- 官方资料：核对当天下载页列出 24.21.0 为 LTS；官方发行目录提供 Windows x64 ZIP、独立可执行文件和 SHA-256。LICENSE 包含 Node 本身及其内含第三方组件的许可，应保留完整文件，不能只复制第一段。
+- 项目对应：分发脚本固定版本和官方归档/可执行文件指纹，核验后仅提取运行时和完整许可；开发首次打包取得资源，使用者解压后不联网下载。版本与指纹的唯一机器定义见 `scripts/packageWindows.mjs`，实际构建文件范围见发行清单。
+- 适用限制：固定 SHA-256 核对与 HTTPS 官方取得不是 GPG 签名验证，也不保证未来版本始终适用。Windows x64 包的支持范围、实际系统与浏览器验证分别记录，不由下载资料推断所有平台或人工验收已通过。本次未改变项目自有代码的开源许可。
